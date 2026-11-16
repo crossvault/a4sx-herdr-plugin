@@ -1,0 +1,112 @@
+# a4sx for herdr
+
+A [herdr](https://herdr.dev) plugin for [a4sx](https://session-exchange.com) meshes. One key opens a small menu:
+
+1. start one of your a4sx cells in a new pane,
+2. show the peers of your meshes,
+3. join a mesh from an invitation link.
+
+Version 0.3.1, early. Made by crossVault GmbH, the company behind a4sx. Not affiliated with herdr.
+
+## What you need
+
+- Linux, or WSL on Windows. This plugin does not support macOS yet.
+- herdr 0.9.1 or newer. Omarchy 4.5.0 ships 0.9.1.
+- Python 3 as `python3`.
+- Claude Code, started once so you are signed in.
+- The a4sx CLI, signed in with `a4sx login`, and at least one cell on this machine. The guide is at https://session-exchange.com/guide/meshes.
+
+## Install
+
+```
+herdr plugin install crossvault/a4sx-herdr-plugin
+herdr plugin action list --plugin a4sx.mesh
+```
+
+herdr shows what the plugin declares and asks before it installs. The second command lists four actions: `menu`, `start-cell`, `peers`, `join`.
+
+To work on the plugin, clone the repository and run `herdr plugin link /path/to/a4sx-herdr-plugin` instead.
+
+herdr has no menu for plugin actions, so bind one key to the plugin's menu. Add this to `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+a"
+type = "plugin_action"
+command = "a4sx.mesh.menu"
+description = "a4sx menu"
+```
+
+Then run `herdr server reload-config`. `Ctrl+b`, then `a` opens the menu. The plugin cannot add the key for you; herdr gives plugins no way to do that.
+
+Without a key, every action also runs from a pane:
+
+```
+herdr plugin action invoke a4sx.mesh.menu
+```
+
+If you linked a clone, run `herdr plugin link` on the folder again after you update it. To remove a linked plugin: `herdr plugin unlink a4sx.mesh`.
+
+## What the menu does
+
+| Choice | What happens |
+|---|---|
+| **1 Start a cell** | Lists the cells on this machine. You type a number. The plugin splits the pane you were in and types `a4sx launch --cell NAME` there, in the same folder. |
+| **2 Mesh peers** | Shows a4sx's own peer table for each of your cells that is in a mesh. Enter refreshes, `q` closes. |
+| **3 Join a mesh** | Opens a pane and runs `a4sx mesh join -`. You paste the invitation link there. a4sx shows the invitation and asks before it joins. |
+
+Enter alone closes the menu.
+
+## Launch flags
+
+The plugin starts a cell as `a4sx launch --cell NAME`. Extra flags come only from your own file `launch-args.json` in the plugin's config directory (`herdr plugin config-dir a4sx.mesh` prints it). The plugin passes on exactly three flags, spelled in full, and refuses the file if it holds anything else:
+
+- `--mesh-reduced-isolation`
+- `--local-login`
+- `--model=NAME`
+
+So the file cannot start a different cell than the one you pick, cannot turn on `--auto-allow-ipc-messages`, and cannot pass anything through to Claude Code. For any other flag, start the cell yourself in a terminal. Your own a4sx launch profile applies as it does in a terminal.
+
+Example (`launch-args.example.json`):
+
+```json
+{"default": ["--mesh-reduced-isolation"], "cells": {"desk": ["--local-login"]}}
+```
+
+`default` applies to every cell, `cells` adds flags for one cell by name.
+
+On a host without a4sx's sandbox (most hosts today), a4sx starts a mesh cell only with `--mesh-reduced-isolation`. The plugin never adds that flag. It is your statement to a4sx that you know the cell runs without the sandbox there: its shell commands can change your system and its agent can read your Claude login. Put it in `launch-args.json` yourself once you accept that. Without it a4sx refuses in the new pane, explains why, and starts nothing.
+
+## What it runs and what it sends
+
+The plugin is one Python file with no dependencies. It runs:
+
+- `a4sx mesh cells --json`, to list your cells. It reads only `name`, `mesh_name`, `mesh_id`, `needs_approval` and `default` from the answer, and shows no key fields.
+- `a4sx mesh peers MESH --cell NAME --no-browser`, shown as a4sx prints it.
+- `a4sx launch --cell NAME` with your flags, typed into the new pane.
+- `a4sx mesh join -` in a pane, with you at the keyboard.
+- `herdr plugin pane open`, `herdr pane list`, `herdr pane split`, `herdr tab create`, `herdr pane run`. The launch command is typed only into a pane that was not there before, with a4sx's full path.
+
+It sends nothing anywhere itself and fetches nothing. The a4sx CLI it starts talks to session-exchange.com.
+
+It never sees an invitation code: you paste the link into a4sx itself, which reads it without showing it. It also removes herdr's context variables (selected text, a clicked link) from the environment of everything it starts.
+
+## Known limits
+
+- **Invoking the menu twice opens two menus** on top of each other. Close each with Enter.
+- **After herdr restarts,** a pane that held a cell can come back as plain Claude Code, outside the mesh (seen with herdr 0.9.1, which can't restore cells). Start the cell again from the menu.
+- **No click on invitation links.** Without a terminal, `a4sx mesh join` cannot ask "Join?", and a plugin that answers for you would hide the invitation from the person who is about to join. So joining always happens in a pane where you see the invitation and answer yourself.
+- This plugin does not support **macOS** yet.
+
+## Tested
+
+| Where | What | Result |
+|---|---|---|
+| herdr 0.9.5, Arch Linux in WSL, a4sx CLI 0.30.1 | Peers; start a cell without and with `--mesh-reduced-isolation` | Works; a4sx refuses the start without the flag |
+| herdr 0.9.1, Omarchy 4.5.0 | Link, key binding, menu, all three choices, against a stand-in for the a4sx CLI | Works |
+
+Not tested yet: joining a mesh through the plugin with a real a4sx CLI, and getting cells back after a herdr restart (herdr 0.9.1 brings them back as plain Claude Code, see Known limits).
+
+## Licence
+
+MIT. See `LICENSE`.

@@ -1,0 +1,54 @@
+id = "a4sx.mesh"
+name = "a4sx mesh"
+version = "0.3.1"
+min_herdr_version = "0.9.1"
+description = "Start a4sx cells in panes, show mesh peers, join a mesh from an invitation"
+platforms = ["linux"]
+
+[[actions]]
+id = "menu"
+title = "a4sx: menu"
+contexts = ["workspace"]
+command = ["python3", "a4sx_herdr.py", "menu"]
+
+[[panes]]
+id = "menu"
+title = "a4sx"
+placement = "overlay"
+command = ["python3", "a4sx_herdr.py", "pane-menu"]
+
+[[actions]]
+id = "start-cell"
+title = "a4sx: start a cell in a new pane"
+contexts = ["workspace"]
+command = ["python3", "a4sx_herdr.py", "start-cell"]
+
+[[actions]]
+id = "peers"
+title = "a4sx: show mesh peers"
+contexts = ["workspace"]
+command = ["python3", "a4sx_herdr.py", "peers"]
+
+[[actions]]
+id = "join"
+title = "a4sx: join a mesh (paste an invitation link)"
+contexts = ["workspace"]
+command = ["python3", "a4sx_herdr.py", "join"]
+
+[[panes]]
+id = "cell-picker"
+title = "a4sx: start a cell"
+placement = "overlay"
+command = ["python3", "a4sx_herdr.py", "pane-cell-picker"]
+
+[[panes]]
+id = "peers"
+title = "a4sx: mesh peers"
+placement = "overlay"
+command = ["python3", "a4sx_herdr.py", "pane-peers"]
+
+[[panes]]
+id = "join"
+title = "a4sx: join a mesh"
+placement = "overlay"
+command = ["python3", "a4sx_herdr.py", "pane-join"]
