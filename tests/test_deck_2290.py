@@ -543,6 +543,9 @@ class IdleShell(unittest.TestCase):
                 self.assertEqual(len(asked), 1)
 
 
+_REAL_EMPTY = deck.pane_is_empty_shell
+
+
 class LeftoverFollowUps(unittest.TestCase):
     """Follow-ups after 0.4.1 (cell01's herdr 0.9.5 facts): (a) only the cell's own remembered pane is reused; (b) its
     leftover tabs can be closed when every pane is a bare prompt, after a yes; (c) ctrl+u before typing, idle only."""
@@ -567,6 +570,7 @@ class LeftoverFollowUps(unittest.TestCase):
             return {}
         mock.patch.object(deck, "jrun", jrun).start()
         mock.patch.object(deck, "pane_is_idle_shell", lambda p: p in self.idle).start()
+        mock.patch.object(deck, "pane_is_empty_shell", lambda p: p in self.idle).start()
         mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: self.ran.append(argv[1:]) or (0, "", "")).start()
         self.cwd = d
 
@@ -603,13 +607,37 @@ class LeftoverFollowUps(unittest.TestCase):
         asked = []
         ui.choose = lambda title, items, cb: (asked.append((title, items)), cb(0))
         ui.close_leftovers()
-        self.assertEqual(asked[0], ("close 1 leftover tab(s) of «build»? Each holds only an empty shell prompt", ["no", "yes, close them"]))
+        self.assertEqual(asked[0], ("close 1 leftover tab(s) of «build»? Each holds only an empty shell prompt, with no jobs running", ["no", "yes, close them"]))
         self.assertNotIn(["tab", "close", "w1:t2"], self.ran)
         ui.choose = lambda title, items, cb: cb(1)
         ui.close_leftovers()
         self.assertIn(["tab", "close", "w1:t2"], self.ran)
         self.assertNotIn("build", deck._cell_panes())
         self.assertEqual(seen["lines"], ["closed 1 leftover tab(s): «build»"])
+
+    def test_b_a_shell_with_a_job_is_never_empty(self):
+        """Review: a vim suspended with Ctrl-Z or `npm run dev &` is a child of the idle-looking shell."""
+        with mock.patch.object(deck, "_idle_shell_pid", lambda p: 4242):
+            with mock.patch.object(deck, "_shell_children", lambda pid: ["4300"]):
+                self.assertFalse(_REAL_EMPTY("w1:p3"))
+            with mock.patch.object(deck, "_shell_children", lambda pid: None):
+                self.assertFalse(_REAL_EMPTY("w1:p3"), "unreadable counts as busy")
+            with mock.patch.object(deck, "_shell_children", lambda pid: []):
+                self.assertTrue(_REAL_EMPTY("w1:p3"))
+        with mock.patch.object(deck, "_idle_shell_pid", lambda p: None):
+            self.assertFalse(_REAL_EMPTY("w1:p3"))
+
+    def test_b_a_failed_close_is_said(self):
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.idle = {"w1:p3"}
+        mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (1, "", "no")).start()
+        ui = object.__new__(deck.Deck)
+        seen = {}
+        ui.note = lambda lines, title="result": seen.update(lines=lines)
+        ui.choose = lambda title, items, cb: cb(1)
+        ui.close_leftovers()
+        self.assertEqual(seen["lines"], ["closed 0 leftover tab(s)", "herdr didn't close: «build»"])
+        self.assertIn("build", deck._cell_panes())
 
     def test_b_a_tab_that_got_busy_meanwhile_is_not_closed(self):
         deck._remember_cell_pane("build", "w1:p3", "w1:t2")
