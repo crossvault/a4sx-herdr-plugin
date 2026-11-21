@@ -159,6 +159,78 @@ class StopHost(unittest.TestCase):
         self.assertNotIn("S", ops)
 
 
+class LeftoverShell(unittest.TestCase):
+    """cell01: after a herdr restart a cell's old pane stays as an empty shell; "s" starts the cell there again instead
+    of opening another tab, only when it is that cell's pane (same tab) and no agent runs in it."""
+
+    def setUp(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(deck, "_marker", lambda: os.path.join(d, "pane-x.txt")).start()
+        mock.patch.object(deck, "IN_HERDR", True).start()
+        self.ran, self.panes = [], {}
+
+        def jrun(argv, t=30):
+            if argv[1:3] == ["pane", "get"]:
+                return {"result": {"pane": self.panes[argv[3]]}} if argv[3] in self.panes else {}
+            if argv[1:3] == ["tab", "create"]:
+                return {"result": {"root_pane": {"pane_id": "w1:p9"}, "tab": {"tab_id": "w1:t9"}}}
+            return {}
+        mock.patch.object(deck, "jrun", jrun).start()
+        mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: self.ran.append(argv[1:]) or (0, "", "")).start()
+        self.cwd = d
+
+    def test_a_first_start_opens_a_tab_and_remembers_its_pane(self):
+        out = deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build")
+        self.assertIn("opened the tab «build»", out)
+        self.assertEqual(deck._cell_panes()["build"], ["w1:p9", "w1:t9"])
+
+    def test_after_a_restart_its_empty_shell_is_used_again(self):
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
+        out = deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build")
+        self.assertIn("started in its tab «build» again", out)
+        self.assertNotIn(["tab", "create"], [r[:2] for r in self.ran])
+        self.assertEqual(self.ran[0][:3], ["pane", "run", "w1:p3"])
+        self.assertTrue(self.ran[0][3].startswith("cd ") and self.ran[0][3].endswith("&& a4sx launch --cell build"))
+        self.assertEqual(self.ran[1], ["tab", "focus", "w1:t2"])
+
+    def test_a_pane_with_an_agent_another_tab_or_no_answer_is_never_typed_into(self):
+        for pane in ({"pane_id": "w1:p3", "tab_id": "w1:t2", "agent": "claude"}, {"pane_id": "w1:p3", "tab_id": "w1:t5"}, None):
+            self.ran.clear()
+            self.panes.clear()
+            if pane:
+                self.panes["w1:p3"] = pane
+            deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+            deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build")
+            self.assertNotIn("w1:p3", [r[2] for r in self.ran if r[:2] == ["pane", "run"]], pane)
+
+    def test_another_cells_pane_is_not_this_ones(self):
+        deck._remember_cell_pane("docs", "w1:p3", "w1:t2")
+        self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
+        self.assertIsNone(deck._leftover_pane("build"))
+
+
+class Cell01BringUp(unittest.TestCase):
+    """cell01 on Omarchy (2026-11-21): "open" really brings the deck to the front; a cell's name only on its own pane."""
+
+    def test_open_focuses_the_new_tab_with_tab_focus(self):
+        ran = []
+        with mock.patch.object(deck, "deck_state", side_effect=[(None, None, False), ("w1:p7", "w1:t7", True)]), \
+                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: ran.append(argv[1:]) or (0, "", "")), \
+                mock.patch.object(deck.time, "sleep", lambda s: None):
+            self.assertEqual(deck.open_deck(True), 0)
+        self.assertEqual(ran[0][:3], ["plugin", "pane", "open"])
+        self.assertIn("--focus", ran[0])
+        self.assertEqual(ran[1], ["tab", "focus", "w1:t7"])
+
+    def test_the_one_agent_here_is_not_named_after_a_cell(self):
+        with open(SRC, encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn("agents[0] if len(agents) == 1", src)
+        self.assertIn('os.path.basename((x.get("cwd") or "").rstrip("/")) == name', src)
+
+
 class StaleMarker(unittest.TestCase):
     """Review: a marker left behind (herdr killed the deck's pane) must never make the deck type into another pane
     that later got the same id."""

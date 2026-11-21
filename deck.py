@@ -144,7 +144,55 @@ def lines_of(res, empty="(no output)"):
     return txt or [empty if rc == 0 else f"{empty} (exit {rc})"]
 
 
-def new_tab(label, cwd, argv):
+def _cell_panes_path():
+    """cell01: the pane each cell was last started in from the deck, per herdr session ({cell: [pane, tab]})."""
+    return _marker()[:-len(".txt")].replace("pane-", "cells-", 1) + ".json"
+
+
+def _cell_panes():
+    try:
+        with open(_cell_panes_path(), encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _remember_cell_pane(cell, pane, tab):
+    got = _cell_panes()
+    got[cell] = [pane, tab]
+    try:
+        os.makedirs(os.path.dirname(_cell_panes_path()), exist_ok=True)
+        tmp = _cell_panes_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(dict(list(got.items())[-64:]), f)
+        os.replace(tmp, _cell_panes_path())
+    except OSError:
+        pass   # only a convenience: the next start opens a new tab
+
+
+def _leftover_pane(cell):
+    """cell01 (after a herdr restart the cell's old pane stays as an empty shell): the pane the deck last started this
+    cell in, when herdr still has it in the same tab and no agent runs in it; else None. Like the deck's own restored
+    pane, never a pane herdr can't answer for."""
+    pane, tab = (_cell_panes().get(cell) or [None, None])[:2]
+    if not pane or not tab:
+        return None
+    info = (jrun([HERDR, "pane", "get", pane], 8).get("result") or {}).get("pane")
+    if not isinstance(info, dict) or info.get("agent") or info.get("agent_session"):
+        return None
+    if info.get("tab_id", tab) != tab:
+        return None
+    if "tab_id" not in info:   # not in pane get's answer: the pane list says which tab it is in
+        panes = (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
+        if not any(p.get("pane_id") == pane and p.get("tab_id") == tab for p in panes):
+            return None
+    return pane, tab
+
+
+def new_tab(label, cwd, argv, cell=None):
+    """A new herdr tab running argv. `cell`: a cell's start; its leftover shell from before a herdr restart is used
+    instead of a new tab (cell01), and the pane is remembered for the next time."""
     os.makedirs(cwd, exist_ok=True)
     shown = ("a4sx " + " ".join(argv[len(A4SX_ARGV):])) if argv[:len(A4SX_ARGV)] == A4SX_ARGV else " ".join(argv)
     if not IN_HERDR:
@@ -164,6 +212,13 @@ def new_tab(label, cwd, argv):
         except OSError as e:
             return f"could not open a terminal for: {shown} ({e.__class__.__name__})"
         return f"opened the terminal tab «{label}»: {shown}"
+    old = _leftover_pane(cell) if cell else None
+    if old:
+        pane, tab = old
+        # the shell may be in another folder: cd first, in the same line
+        run([HERDR, "pane", "run", pane, "cd " + shlex.quote(cwd) + " && " + " ".join(shlex.quote(a) for a in argv)])
+        run([HERDR, "tab", "focus", tab])
+        return f"started in its tab «{label}» again (its pane from before herdr restarted): {shown}"
     d = jrun([HERDR, "tab", "create", "--cwd", cwd, "--label", label, "--focus"]).get("result") or {}
     pane, tab = (d.get("root_pane") or {}).get("pane_id"), (d.get("tab") or {}).get("tab_id")
     if not pane:
@@ -171,6 +226,8 @@ def new_tab(label, cwd, argv):
     run([HERDR, "pane", "run", pane, " ".join(shlex.quote(a) for a in argv)])
     if tab:
         run([HERDR, "tab", "focus", tab])
+        if cell:
+            _remember_cell_pane(cell, pane, tab)
     return f"opened the tab «{label}»: {shown}"
 
 
@@ -275,7 +332,17 @@ def open_deck(focus=True):
             alive = True
     if pane and alive:
         return run([HERDR, "tab", "focus", tab])[0] if (focus and tab) else 0
-    return run([HERDR, "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "deck"] + (["--focus"] if focus else []))[0]
+    rc = run([HERDR, "plugin", "pane", "open", "--plugin", PLUGIN_ID, "--entrypoint", "deck"] + (["--focus"] if focus else []))[0]
+    if rc == 0 and focus:
+        # cell01 (herdr 0.9.5): `plugin pane open --focus` marks the new tab focused, but an attached window keeps showing
+        # the tab it was on; `tab focus` is what switches it (seen on start and on the "open" action)
+        for _ in range(12):
+            time.sleep(0.25)
+            tab = deck_state()[1]
+            if tab:
+                run([HERDR, "tab", "focus", tab], 8)
+                break
+    return rc
 
 
 def start():
@@ -449,8 +516,9 @@ class Data:
             pane = state = cwd = None
             is_running = bool(c and (c.get("local") or {}).get("state") == "running")
             if is_running:
-                a = (next((x for x in agents if os.path.basename(x.get("cwd") or "") == name), None)
-                     or (agents[0] if len(agents) == 1 and len(running) == 1 else None))
+                # cell01: only an agent whose folder is named after the cell. Never "the one agent here": that put the
+                # cell's name on a plain Claude Code pane of another herdr session's owner (seen 2026-11-21)
+                a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
                 if a:
                     pane, state, cwd = a.get("pane_id"), a.get("agent_status"), a.get("cwd")
             return {"name": name, "iid": iid, "presence": presence or "?", "owner": m.get("display_name") or "?", "mine": bool(own) if own is not None else (bool(m) and m is me),
@@ -607,8 +675,8 @@ class Deck:
                 if not r["pane"] and IN_HERDR:
                     ops += [("i", "move it into herdr (it runs outside)", lambda: self.move_here(r))]
             else:
-                ops += [("s", "start it here, same conversation", lambda: self.note([new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"]])])),
-                        ("n", "start it with a new conversation", lambda: self.note([new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--new-session"])]))]
+                ops += [("s", "start it here, same conversation", lambda: self.note([new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"]], cell=r["name"])])),
+                        ("n", "start it with a new conversation", lambda: self.note([new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--new-session"], cell=r["name"])]))]
             ops += [("r", "restore from a saved state …", lambda: self.restore(r)),
                     ("f", "launch profile (model route) …", lambda: self.set_profile(r)),
                     ("l", "Claude sign-in of this host: on/off …", lambda: self.choose(
@@ -660,7 +728,7 @@ class Deck:
             if r["running"]:
                 res += lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
                 time.sleep(2)
-            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved])]
+            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved], cell=r["name"])]
         self.bg(f"{r['name']} ← «{saved}»", work)
 
     def takeover(self, saved):
@@ -677,7 +745,7 @@ class Deck:
         def work():
             res = lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
             time.sleep(2)
-            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"]])]
+            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"]], cell=r["name"])]
         self.bg(f"move {r['name']} into herdr", work)
 
     def set_profile(self, r):
