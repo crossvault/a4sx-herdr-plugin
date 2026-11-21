@@ -5,8 +5,10 @@ Views (keys 1-5): mesh, library, rules, host, move. The selected row's operation
 run with one key. Short commands run in place; anything a person answers (or that opens the browser) runs in a new
 herdr tab. Everything is an ordinary `a4sx` or `herdr` command; the deck stores only the id of its own pane.
 
-Moving a cell's work between hosts and front ends (view 5): "hand off" stops the cell here and saves its
-conversation to your a4sx library as `handoff-<cell>`; "take over" starts a cell on this host seeded from such a
+Moving a cell between hosts and front ends (view 5): "bring here" starts one of your cells that runs elsewhere on
+this host, signed in (the other host's key stops working). Its conversation follows once a4sx #2292 lands (as-is, not
+scrubbed); until then there is no "hand off" here (a scrubbed copy would change its peers' names). "Start from a
+saved session" starts a cell on this host seeded from a saved conversation (a
 saved conversation. The same two commands work from any terminal, so the other side can be VS Code's agent host.
 
 usage: deck.py pane | open | start | label
@@ -574,7 +576,6 @@ class Deck:
             if r["running"]:
                 ops += [("b", "back up its conversation …", lambda: self.with_scrub(f"backup of {r['name']}", lambda fl: self.bg(
                             f"backup of {r['name']}", lambda: self.push(r, f"{r['name']}-backup", f"{r['name']}: backups from the deck", fl)[1]))),
-                        ("h", "hand off: move its work to another host", lambda: self.handoff(r)),
                         ("x", "stop it here", lambda: self.choose(f"stop {r['name']} on this host?", ["no", "yes, stop it"],
                          lambda i: i == 1 and self.bg(f"stop {r['name']}", lambda: lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]])))))]
                 if not r["pane"] and IN_HERDR:
@@ -596,8 +597,6 @@ class Deck:
             has = any(x["name"] == f"handoff-{r['name']}" for x in d.library)
             if r.get("mine"):
                 ops += [("s", "bring it here (starts it on this host)", lambda: self.bring(r["name"], False))]
-                if has:
-                    ops += [("a", "bring it here with its hand-off", lambda: self.bring(r["name"], True))]
         ops += [("m", "last messages with your cell", lambda: self.bg(f"{me} ↔ {r['name']}", lambda: [
             x.strip() for x in lines_of(run([*A4SX_ARGV, "mesh", "deliveries", r["name"], "--mesh", mesh, "--last", "8"]),
                                         "no messages recorded here with this cell")]))]
@@ -855,44 +854,41 @@ class Deck:
             Rt = [f"{FG}{B}{cur['name']}{RS}", f"{DIM}{cur['title']}{RS}", f"{DIM}updated{RS} {cur['updated']}  {DIM}versions{RS} {cur['vers']}  {DIM}size{RS} {cur['size'] or '?'}"] if cur else []
         else:   # move
             hand = [x for x in its if x["kind"] == "handoff"]
+            # a4sx #2309: no scrubbed hand-off (it would change the moved cell's peer names) until #2292's as-is copy
             L += [f"{DIM}  a cell moves by starting it on the other host, signed in: same cell, same rules.{RS}",
-                  f"{DIM}  its conversation travels through your library.{RS}",
-                  f"   {CYAN}{B}{fit(HOST, 14)}{RS} {FAINT}━━{RS} {ORANGE}h hand off{RS} {FAINT}━▶{RS} {MAG}{B}library{RS} {FAINT}━━{RS} {ORANGE}a bring here{RS} {FAINT}━▶{RS} {CYAN}{B}the other host{RS}",
+                  f"{DIM}  its conversation follows once a4sx #2292 lands; until then it starts there with a new one.{RS}",
+                  f"   {CYAN}{B}{fit(HOST, 14)}{RS} {FAINT}━━{RS} {ORANGE}s bring here{RS} {FAINT}━▶{RS} {CYAN}{B}the other host{RS}",
                   "", f"{DIM}  cells on this host{RS}"]
             base = len(L)
             for k, x in enumerate(its):
                 if x["kind"] == "handoff" and (k == 0 or its[k - 1]["kind"] != "handoff"):
-                    L += ["", f"{DIM}  hand-offs waiting in your library{RS}"]
+                    L += ["", f"{DIM}  saved conversations named handoff-… (start one here){RS}"]
                 if x["kind"] == "away" and (k == 0 or its[k - 1]["kind"] != "away"):
                     L += ["", f"{DIM}  cells of {x['owner']} on other hosts{RS}"]
                 if x["kind"] == "cell":
                     L.append(hl(k, f"{mark(k)} {FG}{B}{fit(x['name'], 26)}{RS} {self.state_cell(x, tick)}  {DIM}{x['cwd'] or ''}{RS}"))
                 elif x["kind"] == "away":
-                    ho = any(y["name"] == f"handoff-{x['name']}" for y in lib)
-                    L.append(hl(k, f"{mark(k)} {FG}{fit(x['name'], 26)}{RS} {self.state_cell(x, tick)}  "
-                                   + (f"{ORANGE}hand-off waiting{RS}" if ho else f"{DIM}no hand-off saved{RS}")))
+                    L.append(hl(k, f"{mark(k)} {FG}{fit(x['name'], 26)}{RS} {self.state_cell(x, tick)}"))
                 else:
                     L.append(hl(k, f"{mark(k)} {ORANGE}{fit(x['name'], 34)}{RS} {DIM}{x['updated']}  v{x['vers']}  {x['size']}{RS}  {fit(x['title'], max(8, lw - 78))}"))
-            if not hand:
-                L += ["", f"{DIM}  no hand-off is waiting in your library{RS}"]
             del base
             title, rt_title = "MOVE", "MOVE"
             if cur and cur["kind"] == "cell":
-                self.ops = [x for x in self.cell_ops(cur) if x[0] in ("h", "b", "g", "s", "x")]
-                Rt = [f"{FG}{B}{cur['name']}{RS}  {self.state_cell(cur, tick)}", f"{DIM}h stops it here and saves its conversation{RS}",
-                      f"{DIM}as «handoff-{cur['name']}» in your library{RS}"]
+                self.ops = [x for x in self.cell_ops(cur) if x[0] in ("b", "g", "s", "x")]
+                Rt = [f"{FG}{B}{cur['name']}{RS}  {self.state_cell(cur, tick)}", f"{DIM}to move it: bring it here on the other host{RS}",
+                      f"{DIM}(its conversation follows once a4sx #2292 lands){RS}"]
             elif cur and cur["kind"] == "away":
-                self.ops = [x for x in self.cell_ops(cur) if x[0] in ("s", "a")]
+                self.ops = [x for x in self.cell_ops(cur) if x[0] == "s"]
                 Rt = [f"{FG}{B}{cur['name']}{RS}  {self.state_cell(cur, tick)}", f"{DIM}on another host. Starting it here moves it:{RS}",
                       f"{DIM}the other host's key stops working.{RS}"]
             elif cur:
-                self.ops = [("a", "take over: continue it in a cell here", lambda: self.takeover(cur["name"])),
-                            ("r", "resume natively (plain session)", self.lib_ops(cur)[0][2]), ("X", "delete this hand-off …", self.lib_ops(cur)[5][2])]
+                self.ops = [("a", "start from a saved session: a cell here, seeded from it", lambda: self.takeover(cur["name"])),
+                            ("r", "resume natively (plain session)", self.lib_ops(cur)[0][2]), ("X", "delete this saved conversation …", self.lib_ops(cur)[5][2])]
                 Rt = [f"{ORANGE}{B}{cur['name']}{RS}", f"{DIM}{cur['title']}{RS}", f"{DIM}saved{RS} {cur['updated']}  {DIM}size{RS} {cur['size'] or '?'}"]
             else:
                 self.ops, Rt = [], []
             self.ops = self.ops + [("n", "bring a cell here by its name …", lambda: self.ask(
-                "name of your cell to start on this host", lambda t: self.bring(t, any(y["name"] == f"handoff-{t}" for y in lib))))]
+                "name of your cell to start on this host", lambda t: self.bring(t, False)))]
         if self.view == "host":
             self.ops = self.host_ops() + self.ops
             Rt = self.host_lines() + ([""] + Rt if Rt else [])

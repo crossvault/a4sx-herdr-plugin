@@ -62,3 +62,16 @@ class Budget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoHandOff(unittest.TestCase):
+    def test_hand_off_is_hidden_until_a4sx_2292(self):
+        """The coordinator, for consistency with the VS Code extension: a scrubbed hand-off changes the moved cell's
+        peer names, so no operation reaches it; "bring here" and "Start from a saved session" stay."""
+        with open(SRC, encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn("self.handoff(", src)
+        self.assertNotIn('"hand off: move its work', src)
+        self.assertIn("bring it here (starts it on this host)", src)
+        self.assertIn("start from a saved session", src)
+        self.assertIn("its conversation follows once a4sx #2292 lands", src)

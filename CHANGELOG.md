@@ -6,6 +6,7 @@
 - The deck is the first thing a herdr session shows. Set `on-start` to `focus` (the default), `open` (a tab, not in front) or `off` (only the cells' names go into the agents list), with `DECK_ON_START` or one word in the file `on-start` in this plugin's config folder. After a herdr restart it starts again in its restored pane.
 - It reads locally every 5 seconds and asks the server at most once a minute (some things every 5 minutes), and waits longer each time the server says "slow down". It never reads or shows a key or a sign-in.
 - New actions: `deck` (open the deck) and `deck-label` (the cells' names in the agents list).
+- Moving a cell (view 5): **bring here** starts one of your cells that runs elsewhere on this host, signed in; **Start from a saved session** starts a cell here seeded from a saved conversation. There is no hand-off yet: the conversation follows a moved cell once a4sx #2292 lands (an exact copy; a scrubbed one would change its peers' names).
 
 ## 0.3.3 - 2026-11-21
 
