@@ -392,6 +392,7 @@ class Cell01Omarchy(unittest.TestCase):
     def test_s_and_n_on_a_cell_that_runs_now_say_so_and_start_nothing(self):
         ui, seen = self._ui([{"name": "build", "local": {"state": "running"}}],
                             [{"pane_id": "w1:p4", "cwd": "/home/me/projects/build"}])
+        ui.msg = ""
         ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
         self.assertEqual(seen["lines"], ["«build» is already running on this host, in pane w1:p4: g goes there; nothing was started"])
 
@@ -401,8 +402,16 @@ class Cell01Omarchy(unittest.TestCase):
         ui.start_seeded({"name": "build", "running": False}, "handoff-build")
         self.assertEqual(seen["lines"], ["«build» is already running on this host; nothing was started"])
 
+    def test_a_second_press_while_checking_starts_nothing_more(self):
+        ui, seen = self._ui([{"name": "build", "local": {"state": "stored"}}])
+        ui.msg = ""
+        ui.starting = {"build"}   # the first press is being checked
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("a second tab")):
+            ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+
     def test_a_stopped_cell_starts(self):
         ui, seen = self._ui([{"name": "build", "local": {"state": "stored"}}])
+        ui.msg = ""
         with mock.patch.object(deck, "new_tab", lambda *a, **k: "opened"), mock.patch.object(deck, "_leftover_pane", lambda c: None):
             ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
         self.assertEqual(seen["lines"], ["opened"])
@@ -420,6 +429,7 @@ class Cell01Omarchy(unittest.TestCase):
         ui.mode = "browse"
         for k in ("b", "s", "x", "S", "enter", "1"):
             self.assertTrue(ui.key(k), k)   # nothing runs, the deck stays
+        self.assertTrue(ui.key("esc"), "Esc doesn't quit the deck elsewhere either")
         self.assertFalse(ui.key("q"))
         self.assertFalse(ui.key("\x03"))
 
@@ -461,12 +471,76 @@ class StaleLabel(unittest.TestCase):
         deck.label_panes([])
         self.assertEqual(self.ran, [], "cleared once")
 
+    def test_a_failed_agent_list_clears_nothing(self):
+        deck.label_panes([{"name": "build", "pane": "w1:p4"}])
+        self.ran.clear()
+        deck.label_panes([{"name": "build", "pane": None}], [], clear=False)
+        self.assertEqual(self.ran, [])
+        self.assertEqual(deck.LABELED, {"w1:p4": "build"})
+
     def test_a_cell_of_another_mesh_that_still_runs_keeps_its_name(self):
         deck.label_panes([{"name": "docs", "pane": "w1:p5"}])
         self.ran.clear()
         deck.label_panes([{"name": "build", "pane": None}], [{"name": "docs", "local": {"state": "running"}}])
         self.assertEqual(self.ran, [])
         self.assertEqual(deck.LABELED, {"w1:p5": "docs"})
+
+
+class IdleShell(unittest.TestCase):
+    """cell01's herdr 0.9.5 `pane process-info --pane <id>` samples: an idle bash, `less` in front, the cell's own pane."""
+    IDLE = {"result": {"process_info": {"shell_pid": 246966, "foreground_process_group_id": 246966, "foreground_processes": [
+        {"argv": ["bash"], "cmdline": "bash", "cwd": "/home/me/projects/build", "name": "bash", "pid": 246966}]}}}
+    LESS = {"result": {"process_info": {"shell_pid": 246966, "foreground_process_group_id": 247056, "foreground_processes": [
+        {"argv": ["less", "x"], "cmdline": "less x", "cwd": "/home/me", "name": "less", "pid": 247056}]}}}
+    CELL = {"result": {"process_info": {"shell_pid": 246966, "foreground_process_group_id": 250001, "foreground_processes": [
+        {"argv": ["python3", "a4sx", "launch"], "cmdline": "python3 a4sx launch --cell build", "cwd": "/home/me/projects/build",
+         "name": "python3", "pid": 250001},
+        {"argv": ["claude"], "cmdline": "claude", "cwd": "/home/me/projects/build", "name": "claude", "pid": 250010}]}}}
+
+    def _idle(self, answer):
+        asked = []
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: asked.append(argv[1:]) or answer):
+            got = deck.pane_is_idle_shell("w1:p3")
+        self.assertEqual(asked, [["pane", "process-info", "--pane", "w1:p3"]])
+        return got
+
+    def test_the_samples(self):
+        self.assertTrue(self._idle(self.IDLE))
+        self.assertFalse(self._idle(self.LESS))
+        self.assertFalse(self._idle(self.CELL))
+
+    def test_anything_else_is_not_idle(self):
+        import copy
+        for change in (lambda i: i.update(shell_pid=None), lambda i: i.update(shell_pid=True),
+                       lambda i: i["foreground_processes"].append({"pid": 1, "name": "sleep"}),
+                       lambda i: i["foreground_processes"][0].update(name="vim"),
+                       lambda i: i["foreground_processes"][0].update(pid=1),
+                       lambda i: i.update(foreground_processes="bash")):
+            a = copy.deepcopy(self.IDLE)
+            change(a["result"]["process_info"])
+            self.assertFalse(self._idle(a), a)
+        self.assertFalse(self._idle({}))
+        self.assertFalse(self._idle({"result": {}}))
+        a = copy.deepcopy(self.IDLE)
+        a["result"]["process_info"]["foreground_processes"][0]["name"] = "-zsh"   # a login shell
+        self.assertTrue(self._idle(a))
+
+    def test_an_idle_shell_is_used_without_a_question_anything_else_asks(self):
+        ui = object.__new__(deck.Deck)
+        ui.pdir = lambda n: "/tmp"
+        seen = {}
+        ui.note = lambda lines, title="result": seen.update(lines=lines)
+        with mock.patch.object(deck, "_leftover_pane", lambda c: ("w1:p3", "w1:t2")), \
+                mock.patch.object(deck, "new_tab", lambda *a, **k: f"reuse={k.get('reuse')}"):
+            with mock.patch.object(deck, "pane_is_idle_shell", lambda p: True):
+                ui.choose = lambda *a: self.fail("asked")
+                ui._start_cell("build", ["a4sx", "launch", "--cell", "build"])
+                self.assertEqual(seen["lines"], ["reuse=('w1:p3', 'w1:t2')"])
+            with mock.patch.object(deck, "pane_is_idle_shell", lambda p: False):
+                asked = []
+                ui.choose = lambda title, items, cb: asked.append(title)
+                ui._start_cell("build", ["a4sx", "launch", "--cell", "build"])
+                self.assertEqual(len(asked), 1)
 
 
 class StaleMarker(unittest.TestCase):

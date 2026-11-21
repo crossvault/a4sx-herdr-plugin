@@ -192,10 +192,28 @@ def _leftover_pane(cell):
     return pane, tab
 
 
+#: the shells whose bare prompt counts as idle (process-info's foreground process name)
+IDLE_SHELLS = ("bash", "zsh", "fish", "sh")
+
+
+def pane_is_idle_shell(pane):
+    """cell01 (herdr 0.9.5 `pane process-info --pane <id>`): True only when the pane shows a bare shell prompt: the
+    foreground process group is the shell's own, it is the one foreground process, and it is a known shell. Anything
+    else (a program in front, a nested shell, an unknown shape, an error) is False, and the deck asks instead."""
+    info = (jrun([HERDR, "pane", "process-info", "--pane", pane], 8).get("result") or {}).get("process_info")
+    if not isinstance(info, dict):
+        return False
+    sp, fg, procs = info.get("shell_pid"), info.get("foreground_process_group_id"), info.get("foreground_processes")
+    if not isinstance(sp, int) or isinstance(sp, bool) or fg != sp or not isinstance(procs, list) or len(procs) != 1:
+        return False
+    p = procs[0] if isinstance(procs[0], dict) else {}
+    return p.get("pid") == sp and os.path.basename(str(p.get("name") or "")).lstrip("-") in IDLE_SHELLS
+
+
 def new_tab(label, cwd, argv, cell=None, reuse=None):
     """A new herdr tab running argv. `cell`: a cell's start: its name must follow the CLI's rule, and its pane is
     remembered for the next time. `reuse`: (pane, tab) of the cell's leftover shell from before a herdr restart, which
-    the person confirmed is an empty shell (review: herdr can't tell an idle shell from vim or ssh in it); it is
+    herdr's process-info shows as a bare shell prompt, or the person said is one (pane_is_idle_shell can't tell); it is
     checked again, and a failed run there opens a new tab. Everything typed into a shell is shlex-quoted (POSIX:
     herdr's panes are on Linux)."""
     if cell is not None and not CELL_NAME_RE.fullmatch(str(cell)):
@@ -247,7 +265,7 @@ LABELED = {}
 LABEL_SOURCES = ("a4sx-deck", "a4sx-launch")
 
 
-def label_panes(rows, cells=()):
+def label_panes(rows, cells=(), clear=True):
     """Each running cell's name on its pane; cell01: a pane whose cell left it (moved away, stopped) loses that name.
     herdr 0.9.5 clears a label only for the source that set it, so both sources are cleared."""
     now = {}
@@ -260,7 +278,7 @@ def label_panes(rows, cells=()):
     running = {c.get("name") for c in cells if (c.get("local") or {}).get("state") == "running"}
     shown = {r["name"] for r in rows}
     for pane in [p for p in LABELED if p not in now]:
-        if LABELED[pane] in running and LABELED[pane] not in shown:
+        if not clear or (LABELED[pane] in running and LABELED[pane] not in shown):
             now[pane] = LABELED[pane]
             continue
         for src in LABEL_SOURCES:
@@ -514,7 +532,9 @@ class Data:
     def _refresh(self, force):
         now = time.time()
         # ---- local: no request to the server
-        agents = ((jrun([HERDR, "agent", "list"]).get("result") or {}).get("agents") or []) if IN_HERDR else []
+        got_agents = jrun([HERDR, "agent", "list"]) if IN_HERDR else {}
+        agents_ok = isinstance(got_agents.get("result"), dict)   # review: a failed list must not clear every name
+        agents = (got_agents.get("result") or {}).get("agents") or [] if agents_ok else []
         ah = jrun([*A4SX_ARGV, "agent-host", "status", "--json"], 20)
         if ah or not self.ah["known"]:
             self.ah = {**ah, "running": bool(ah.get("running")), "address": ah.get("address") or "", "known": bool(ah),
@@ -593,7 +613,7 @@ class Data:
                                 "online" if (c.get("local") or {}).get("state") == "running" else "offline"))
         rows.sort(key=lambda r: (not r["here"], r["presence"] != "online", r["name"] or ""))
         if IN_HERDR and server_due:
-            label_panes(rows, cells)
+            label_panes(rows, cells, clear=agents_ok)
         self.n += 1
         if ref and (force or now - self.t_act >= T_SERVER):   # local delivery records, no server request
             self.t_act = now
@@ -927,17 +947,30 @@ class Deck:
         """s / n: a new tab, or (review) the cell's leftover shell from before a herdr restart when the person says it is
         an empty shell: herdr knows whether an agent runs there, not whether vim or ssh does. cell01: never a second
         start of a cell that runs already. Review: the check runs in the background, never in the key handler."""
+        pending = self.__dict__.setdefault("starting", set())
+        if name in pending:   # review: a second press while the first is checked opens no second tab
+            return
+        pending.add(name)
+        self.msg = f"{name}: checking whether it runs here …"
+
         def work():
-            now = self.running_now(name, iid)
-            if now is not None:
-                return self.already_running(name, now)
-            self._start_cell(name, argv)
+            try:
+                now = self.running_now(name, iid)
+                if now is not None:
+                    return self.already_running(name, now)
+                self._start_cell(name, argv)
+            finally:
+                pending.discard(name)
+                if self.msg.startswith(f"{name}: checking"):
+                    self.msg = ""
         threading.Thread(target=work, daemon=True).start()
 
     def _start_cell(self, name, argv):
         old = _leftover_pane(name) if CELL_NAME_RE.fullmatch(str(name)) else None
         if not old:
             return self.note([new_tab(name, self.pdir(name), argv, cell=name)])
+        if pane_is_idle_shell(old[0]):   # cell01: herdr shows a bare shell prompt there: no question
+            return self.note([new_tab(name, self.pdir(name), argv, cell=name, reuse=old)])
         self.choose(f"«{name}» has its tab from before herdr restarted. Is its pane an empty shell prompt (no vim, ssh, "
                     "…)? The start command is typed into it", ["no, open a new tab", "yes, start it in that pane"],
                     lambda i: self.note([new_tab(name, self.pdir(name), argv, cell=name, reuse=old if i == 1 else None)]))
@@ -1161,8 +1194,8 @@ class Deck:
 
     # ------------------------------------------------------------ keys
     def key(self, k):
-        if getattr(self, "narrow", False):   # review: unseen operations never run; only closing works there
-            return k not in ("q", "\x03", "esc")
+        if getattr(self, "narrow", False):   # review: unseen operations never run; only closing works there (q, as it says)
+            return k not in ("q", "\x03")
         if self.mode == "input":
             if k == "esc":
                 self.mode = "browse"
