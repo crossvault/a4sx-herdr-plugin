@@ -249,6 +249,14 @@ def label_panes(rows):
 
 # ---------------------------------------------------------------- the deck as the first thing a herdr session shows
 DECK_TITLE = "a4sx deck"
+#: cell01: below this the boxes overlap; the deck then shows one plain line what to do
+DECK_MIN_W, DECK_MIN_H = 100, 20
+
+
+def narrow_screen(w, h):
+    """What a pane too small for the deck shows: the size it has and needs, and what to do (plain text, short lines)."""
+    return ["a4sx deck", "", f"this pane is {w}×{h};", f"the deck needs {DECK_MIN_W + 1}×{DECK_MIN_H}.", "",
+            "make the pane wider", "(or zoom it in herdr);", "q closes the deck"]
 
 
 def _marker():
@@ -760,6 +768,11 @@ class Deck:
                     lambda i: self.start_seeded(r, lib[i]["name"]))
 
     def start_seeded(self, r, saved):
+        if not r["running"]:   # cell01: it may have started since the last refresh (herdr restores cells)
+            now = self.running_now(r["name"])
+            if now is not None:
+                return self.already_running(r["name"], now)
+
         def work():
             res = []
             if r["running"]:
@@ -868,9 +881,27 @@ class Deck:
         ops.append(("D", "check a4sx's folders (doctor)", lambda: self.bg("doctor", lambda: lines_of(run([*A4SX_ARGV, "doctor"], 120))[-8:])))
         return ops
 
+    def running_now(self, name):
+        """cell01: the cell's local state read now (the deck's rows can be seconds old, e.g. herdr restored the cell
+        meanwhile): None when it isn't running here, else the herdr pane its agent runs in ("" when unknown)."""
+        got = jrun([*A4SX_ARGV, "mesh", "cells", "--json"], 15)
+        if not any(c.get("name") == name and (c.get("local") or {}).get("state") == "running" for c in got.get("cells") or []):
+            return None
+        agents = ((jrun([HERDR, "agent", "list"]).get("result") or {}).get("agents") or []) if IN_HERDR else []
+        a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+        return (a or {}).get("pane_id") or ""
+
+    def already_running(self, name, pane):
+        return self.note([f"«{name}» is already running on this host" + (f", in pane {pane}: g goes there" if pane else "")
+                          + "; nothing was started"], name)
+
     def start_cell(self, name, argv):
         """s / n: a new tab, or (review) the cell's leftover shell from before a herdr restart when the person says it is
-        an empty shell: herdr knows whether an agent runs there, not whether vim or ssh does."""
+        an empty shell: herdr knows whether an agent runs there, not whether vim or ssh does. cell01: never a second
+        start of a cell that runs already."""
+        now = self.running_now(name)
+        if now is not None:
+            return self.already_running(name, now)
         old = _leftover_pane(name) if CELL_NAME_RE.fullmatch(str(name)) else None
         if not old:
             return self.note([new_tab(name, self.pdir(name), argv, cell=name)])
@@ -929,7 +960,11 @@ class Deck:
 
     def draw(self):
         W, H = shutil.get_terminal_size((160, 48))
-        W = max(100, W - 1)
+        W -= 1
+        if W < DECK_MIN_W or H < DECK_MIN_H:   # cell01: a narrow pane broke the layout; say so instead
+            sys.stdout.write("\033[H" + "\n".join(x[:max(W, 1)] + "\033[K" for x in narrow_screen(W + 1, H)[: max(H - 1, 1)]) + "\033[J")
+            sys.stdout.flush()
+            return
         d, tick = self.d, int(time.time() * 8)
         with d.lock:
             rows, members, mine, lib, reqs = list(d.rows), list(d.members), dict(d.mine), list(d.library), list(d.requests)

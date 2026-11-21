@@ -359,6 +359,64 @@ class FewerQuestions(unittest.TestCase):
             self.assertIn('if self.view == "move":', f.read())
 
 
+class Cell01Omarchy(unittest.TestCase):
+    """cell01 on Omarchy with plugin #4: herdr restored the cell, s 11 s later opened a second start; a narrow pane broke
+    the layout."""
+
+    def _ui(self, cells, agents=()):
+        ui = object.__new__(deck.Deck)
+        ui.pdir = lambda n: "/tmp"
+        seen = {}
+        ui.note = lambda lines, title="result": seen.update(lines=lines)
+
+        def jrun(argv, t=30):
+            if argv[-3:] == ["mesh", "cells", "--json"]:
+                return {"cells": cells}
+            if argv[1:3] == ["agent", "list"]:
+                return {"result": {"agents": list(agents)}}
+            return {}
+        p = mock.patch.object(deck, "jrun", jrun)
+        p.start()
+        self.addCleanup(p.stop)
+        q = mock.patch.object(deck, "IN_HERDR", True)
+        q.start()
+        self.addCleanup(q.stop)
+        r = mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("started"))
+        r.start()
+        self.addCleanup(r.stop)
+        return ui, seen
+
+    def test_s_and_n_on_a_cell_that_runs_now_say_so_and_start_nothing(self):
+        ui, seen = self._ui([{"name": "build", "local": {"state": "running"}}],
+                            [{"pane_id": "w1:p4", "cwd": "/home/me/projects/build"}])
+        ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+        self.assertEqual(seen["lines"], ["«build» is already running on this host, in pane w1:p4: g goes there; nothing was started"])
+
+    def test_a_saved_session_start_on_a_cell_that_runs_now_starts_nothing(self):
+        ui, seen = self._ui([{"name": "build", "local": {"state": "running"}}])
+        ui.bg = lambda *a: self.fail("started")
+        ui.start_seeded({"name": "build", "running": False}, "handoff-build")
+        self.assertEqual(seen["lines"], ["«build» is already running on this host; nothing was started"])
+
+    def test_a_stopped_cell_starts(self):
+        ui, seen = self._ui([{"name": "build", "local": {"state": "stored"}}])
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: "opened"), mock.patch.object(deck, "_leftover_pane", lambda c: None):
+            ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+        self.assertEqual(seen["lines"], ["opened"])
+
+    def test_a_narrow_pane_shows_what_to_do_not_a_broken_layout(self):
+        ui = object.__new__(deck.Deck)
+        out = []
+        with mock.patch.object(deck.shutil, "get_terminal_size", lambda d: os.terminal_size((52, 40))), \
+                mock.patch.object(deck.sys, "stdout", types.SimpleNamespace(write=out.append, flush=lambda: None)):
+            ui.draw()
+        text = deck.ANSI.sub("", "".join(out))
+        self.assertIn("this pane is 52×40;", text)
+        self.assertIn("make the pane wider", text)
+        lines = [ln.replace("\033[K", "") for ln in "".join(out).replace("\033[H", "").replace("\033[J", "").split("\n")]
+        self.assertTrue(all(len(ln) <= 51 for ln in lines), lines)
+
+
 class StaleMarker(unittest.TestCase):
     """Review: a marker left behind (herdr killed the deck's pane) must never make the deck type into another pane
     that later got the same id."""
