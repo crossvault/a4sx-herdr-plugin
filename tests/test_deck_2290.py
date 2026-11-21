@@ -188,7 +188,7 @@ class LeftoverShell(unittest.TestCase):
     def test_after_a_restart_its_empty_shell_is_used_again(self):
         deck._remember_cell_pane("build", "w1:p3", "w1:t2")
         self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
-        out = deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build")
+        out = deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build", reuse=("w1:p3", "w1:t2"))
         self.assertIn("started in its tab «build» again", out)
         self.assertNotIn(["tab", "create"], [r[:2] for r in self.ran])
         self.assertEqual(self.ran[0][:3], ["pane", "run", "w1:p3"])
@@ -202,7 +202,7 @@ class LeftoverShell(unittest.TestCase):
             if pane:
                 self.panes["w1:p3"] = pane
             deck._remember_cell_pane("build", "w1:p3", "w1:t2")
-            deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build")
+            deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build", reuse=("w1:p3", "w1:t2"))
             self.assertNotIn("w1:p3", [r[2] for r in self.ran if r[:2] == ["pane", "run"]], pane)
 
     def test_a_hostile_folder_never_runs_as_a_command(self):
@@ -210,11 +210,20 @@ class LeftoverShell(unittest.TestCase):
         deck._remember_cell_pane("build", "w1:p3", "w1:t2")
         self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
         odd = os.path.join(self.cwd, "my dir; touch PWNED $(id) `id` 'q' \"d\" &&x")
-        deck.new_tab("build", odd, ["a4sx", "launch", "--cell", "build"], cell="build")
+        deck.new_tab("build", odd, ["a4sx", "launch", "--cell", "build"], cell="build", reuse=("w1:p3", "w1:t2"))
         line = self.ran[0][3]
         words = shlex.split(line)   # how a POSIX shell splits it: the folder is one word, nothing else runs
         self.assertEqual(words, ["cd", odd, "&&", "a4sx", "launch", "--cell", "build"])
         self.assertTrue(line.startswith("cd '"), line)
+
+    def test_a_backslash_or_line_break_is_never_typed(self):
+        """Review: fish reads \\\\ and \\' inside single quotes, so shlex quoting isn't enough there."""
+        for cwd, argv in ((os.path.join(self.cwd, "a\\'; id; '"), ["a4sx", "launch", "--cell", "build"]),
+                          (self.cwd, ["a4sx", "launch", "--cell", "x\nid"]), (self.cwd, ["a4sx", "x\\y"])):
+            self.ran.clear()
+            out = deck.new_tab("t", cwd, argv)
+            self.assertIn("can't be typed into herdr's shell safely, so nothing was started", out)
+            self.assertEqual([r for r in self.ran if r[:2] == ["pane", "run"]], [])
 
     def test_a_name_outside_the_clis_rule_starts_nothing(self):
         for bad in ("x; rm -rf ~", "$(id)", "`id`", "Build", "a b", "-x", "", "a" * 49, "név"):
@@ -224,6 +233,42 @@ class LeftoverShell(unittest.TestCase):
             self.assertIn("isn't a cell name a4sx takes, so nothing was started", out)
             self.assertEqual(self.ran, [], bad)
         self.assertIsNotNone(deck.CELL_NAME_RE.fullmatch("omarchy-vm"))
+
+    def test_without_the_persons_yes_nothing_is_typed_into_the_old_pane(self):
+        """Review: herdr can't tell an idle shell from vim or ssh running in it, so the deck asks; "no" (the first
+        answer) opens a new tab, and no reuse is ever done without the yes."""
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
+        deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build")   # no reuse given
+        self.assertNotIn("w1:p3", [r[2] for r in self.ran if r[:2] == ["pane", "run"]])
+        ui = object.__new__(deck.Deck)
+        ui.pdir = lambda n: self.cwd
+        seen = {}
+        ui.note = lambda lines, title="result": seen.update(lines=lines)
+        for answer, used in ((0, False), (1, True)):
+            self.ran.clear()
+            deck._remember_cell_pane("build", "w1:p3", "w1:t2")   # a new tab is remembered in its place
+            ui.choose = lambda title, items, cb: (seen.update(asked=title, items=items), cb(answer))
+            ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+            self.assertEqual(seen["items"], ["no, open a new tab", "yes, start it in that pane"])
+            self.assertIn("Is its pane an empty shell prompt", seen["asked"])
+            self.assertEqual("w1:p3" in [r[2] for r in self.ran if r[:2] == ["pane", "run"]], used)
+
+    def test_no_leftover_no_question(self):
+        ui = object.__new__(deck.Deck)
+        ui.pdir = lambda n: self.cwd
+        ui.choose = lambda *a: self.fail("asked")
+        seen = {}
+        ui.note = lambda lines, title="result": seen.update(lines=lines)
+        ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+        self.assertIn("opened the tab «build»", seen["lines"][0])
+
+    def test_a_failed_run_in_the_old_pane_opens_a_new_tab(self):
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
+        mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: self.ran.append(argv[1:]) or ((1, "", "gone") if argv[3:4] == ["w1:p3"] else (0, "", ""))).start()
+        out = deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build", reuse=("w1:p3", "w1:t2"))
+        self.assertIn("opened the tab «build»", out)
 
     def test_another_cells_pane_is_not_this_ones(self):
         deck._remember_cell_pane("docs", "w1:p3", "w1:t2")

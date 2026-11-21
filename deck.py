@@ -192,10 +192,12 @@ def _leftover_pane(cell):
     return pane, tab
 
 
-def new_tab(label, cwd, argv, cell=None):
-    """A new herdr tab running argv. `cell`: a cell's start; its leftover shell from before a herdr restart is used
-    instead of a new tab (cell01), and the pane is remembered for the next time. Everything typed into a shell is
-    shlex-quoted (POSIX: herdr's panes are on Linux); a cell name outside the CLI's rule starts nothing."""
+def new_tab(label, cwd, argv, cell=None, reuse=None):
+    """A new herdr tab running argv. `cell`: a cell's start: its name must follow the CLI's rule, and its pane is
+    remembered for the next time. `reuse`: (pane, tab) of the cell's leftover shell from before a herdr restart, which
+    the person confirmed is an empty shell (review: herdr can't tell an idle shell from vim or ssh in it); it is
+    checked again, and a failed run there opens a new tab. Everything typed into a shell is shlex-quoted (POSIX:
+    herdr's panes are on Linux)."""
     if cell is not None and not CELL_NAME_RE.fullmatch(str(cell)):
         return f"«{ANSI.sub('', str(cell))[:64]}» isn't a cell name a4sx takes, so nothing was started"
     os.makedirs(cwd, exist_ok=True)
@@ -217,13 +219,16 @@ def new_tab(label, cwd, argv, cell=None):
         except OSError as e:
             return f"could not open a terminal for: {shown} ({e.__class__.__name__})"
         return f"opened the terminal tab «{label}»: {shown}"
-    old = _leftover_pane(cell) if cell else None
-    if old:
+    if any("\\" in a or "\n" in a or "\r" in a for a in (cwd, *argv)):
+        # review: fish reads \\ and \' inside single quotes, so shlex's quoting isn't safe there; nothing is typed
+        return f"a backslash or line break in the folder or the command can't be typed into herdr's shell safely, so nothing was started: {shown}"
+    old = _leftover_pane(cell) if (cell and reuse) else None
+    if old and tuple(old) == tuple(reuse):
         pane, tab = old
         # the shell may be in another folder: cd first, in the same line
-        run([HERDR, "pane", "run", pane, "cd " + shlex.quote(cwd) + " && " + " ".join(shlex.quote(a) for a in argv)])
-        run([HERDR, "tab", "focus", tab])
-        return f"started in its tab «{label}» again (its pane from before herdr restarted): {shown}"
+        if run([HERDR, "pane", "run", pane, "cd " + shlex.quote(cwd) + " && " + " ".join(shlex.quote(a) for a in argv)])[0] == 0:
+            run([HERDR, "tab", "focus", tab])
+            return f"started in its tab «{label}» again (its pane from before herdr restarted): {shown}"
     d = jrun([HERDR, "tab", "create", "--cwd", cwd, "--label", label, "--focus"]).get("result") or {}
     pane, tab = (d.get("root_pane") or {}).get("pane_id"), (d.get("tab") or {}).get("tab_id")
     if not pane:
@@ -680,8 +685,8 @@ class Deck:
                 if not r["pane"] and IN_HERDR:
                     ops += [("i", "move it into herdr (it runs outside)", lambda: self.move_here(r))]
             else:
-                ops += [("s", "start it here, same conversation", lambda: self.note([new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"]], cell=r["name"])])),
-                        ("n", "start it with a new conversation", lambda: self.note([new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--new-session"], cell=r["name"])]))]
+                ops += [("s", "start it here, same conversation", lambda: self.start_cell(r["name"], [*A4SX_ARGV, "launch", "--cell", r["name"]])),
+                        ("n", "start it with a new conversation", lambda: self.start_cell(r["name"], [*A4SX_ARGV, "launch", "--cell", r["name"], "--new-session"]))]
             ops += [("r", "restore from a saved state …", lambda: self.restore(r)),
                     ("f", "launch profile (model route) …", lambda: self.set_profile(r)),
                     ("l", "Claude sign-in of this host: on/off …", lambda: self.choose(
@@ -830,6 +835,16 @@ class Deck:
         ops.append(("D", "check a4sx's folders (doctor)", lambda: self.bg("doctor", lambda: lines_of(run([*A4SX_ARGV, "doctor"], 120))[-8:])))
         return ops
 
+    def start_cell(self, name, argv):
+        """s / n: a new tab, or (review) the cell's leftover shell from before a herdr restart when the person says it is
+        an empty shell: herdr knows whether an agent runs there, not whether vim or ssh does."""
+        old = _leftover_pane(name) if CELL_NAME_RE.fullmatch(str(name)) else None
+        if not old:
+            return self.note([new_tab(name, self.pdir(name), argv, cell=name)])
+        self.choose(f"«{name}» has its tab from before herdr restarted. Is its pane an empty shell prompt (no vim, ssh, "
+                    "…)? The start command is typed into it", ["no, open a new tab", "yes, start it in that pane"],
+                    lambda i: self.note([new_tab(name, self.pdir(name), argv, cell=name, reuse=old if i == 1 else None)]))
+
     def stop_host(self):
         """Review: it ends the cells the host started, so it asks first when some run (as x does for one cell)."""
         def go(i):
@@ -864,7 +879,7 @@ class Deck:
     def bring(self, name, with_handoff):
         """Start a cell that is stored on another computer here: with the person's sign-in the server moves it."""
         argv = [*A4SX_ARGV, "launch", "--cell", name] + (["--a4sx-session", f"handoff-{name}"] if with_handoff else [])
-        self.note([new_tab(name, self.pdir(name), argv),
+        self.note([new_tab(name, self.pdir(name), argv, cell=name),
                    "the tab shows the outcome: the cell moves here when it is yours, you are signed in here and it is stopped there",
                    f"{DIM}running there? stop it there first (deck: x stops it){RS}"])
 
