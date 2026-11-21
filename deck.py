@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""a4sx deck 0.6 (prototype): the mesh, its cells, your library and cell hand-offs in one herdr pane.
+"""a4sx deck 0.6 (prototype): the mesh, its cells and your library in one herdr pane.
 
 Views (keys 1-5): mesh, library, rules, host, move. The selected row's operations are always shown on the right and
 run with one key. Short commands run in place; anything a person answers (or that opens the browser) runs in a new
@@ -8,8 +8,8 @@ herdr tab. Everything is an ordinary `a4sx` or `herdr` command; the deck stores 
 Moving a cell between hosts and front ends (view 5): "bring here" starts one of your cells that runs elsewhere on
 this host, signed in (the other host's key stops working). Its conversation follows once a4sx #2292 lands (as-is, not
 scrubbed); until then there is no "hand off" here (a scrubbed copy would change its peers' names). "Start from a
-saved session" starts a cell on this host seeded from a saved conversation (a
-saved conversation. The same two commands work from any terminal, so the other side can be VS Code's agent host.
+saved session" starts a cell on this host seeded from a saved conversation. Both are ordinary `a4sx launch` commands
+that work from any terminal, so the other side can be VS Code's agent host.
 
 usage: deck.py pane | open | start | label
 """
@@ -208,13 +208,27 @@ def deck_state():
             mine, _, pid = f.read().strip().partition(" ")
     except OSError:
         mine, pid = "", ""
+    pid, _, tab = pid.partition(" ")
     for p in panes:
         if mine and p.get("pane_id") == mine:
-            return mine, p.get("tab_id"), _deck_alive(pid)
+            alive = _deck_alive(pid)
+            # review: a pane id comes back for other panes: only the deck's own restored pane (the same tab, no agent
+            # in it) is taken as the deck's; anything else means the marker is stale, and it is dropped
+            if alive or (tab and p.get("tab_id") == tab and not p.get("agent") and not p.get("agent_session")):
+                return mine, p.get("tab_id"), alive
+            _drop_marker()
+            break
     for p in panes:
         if (p.get("terminal_title_stripped") or "") == DECK_TITLE:
             return p.get("pane_id"), p.get("tab_id"), True
     return None, None, False
+
+
+def _drop_marker():
+    try:
+        os.remove(_marker())
+    except OSError:
+        pass
 
 
 def deck_pane_id():
@@ -647,30 +661,6 @@ class Deck:
                     [r["name"] + (f"  {DIM}running: it is stopped first{RS}" if r["running"] else "") for r in here],
                     lambda i: self.start_seeded(here[i], saved))
 
-    def handoff(self, r):
-        label = f"handoff-{r['name']}"
-        flag = [""]
-
-        def work():
-            steps = []
-            if r["running"]:
-                res = lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))
-                steps.append(f"{GREEN}✓{RS} stopped here: {res[-1]}")
-                time.sleep(2)
-            ok, lines = self.push(r, label, f"{r['name']} handed off from {HOST} ({FRONT}) {time.strftime('%Y-%m-%d %H:%MZ', time.gmtime())}", flag[0])
-            steps.append((f"{GREEN}✓{RS} " if ok else f"{RED}✗{RS} ") + lines[0])
-            steps += ["  " + x for x in lines[1:3]]
-            if ok:
-                steps += [f"{CYAN}→{RS} on the other host, in the deck: view 5, select {r['name']}, press a",
-                          f"{CYAN}→{RS} or in any terminal there:  a4sx launch --cell {r['name']} --a4sx-session {label}",
-                          f"{DIM}  that host needs your a4sx sign-in (the cell and the library belong to your account){RS}"]
-            return steps
-        def go(fl):
-            flag[0] = fl
-            self.bg(f"hand-off of {r['name']}", work)
-        self.choose(f"hand off {r['name']}: stop it here and save its conversation as «{label}»?", ["no", "yes, hand it off"],
-                    lambda i: i == 1 and self.with_scrub(f"hand-off of {r['name']}", go))
-
     def move_here(self, r):
         def work():
             res = lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
@@ -758,7 +748,7 @@ class Deck:
         argv = [*A4SX_ARGV, "launch", "--cell", name] + (["--a4sx-session", f"handoff-{name}"] if with_handoff else [])
         self.note([new_tab(name, self.pdir(name), argv),
                    "the tab shows the outcome: the cell moves here when it is yours, you are signed in here and it is stopped there",
-                   f"{DIM}running there? stop it there first (deck: h hands it off with its conversation, x only stops it){RS}"])
+                   f"{DIM}running there? stop it there first (deck: x stops it){RS}"])
 
     def state_cell(self, r, tick):
         if r["state"] == "working":
@@ -981,8 +971,7 @@ class Deck:
                        "held messages of a local cell: readable only from inside the cell today (herdr marks the pane)",
                        "stopping a cell that runs on another host from here: you stop it there, then bring it here",
                        "a host with your sign-in and no cell yet: the deck lists nothing (view 5, n brings a cell by name)",
-                       "taking over a hand-off in VS Code's Agents window: its Conversation field can't list the library yet",
-                       "hand-off from a host without your a4sx sign-in (cell-first hosts): the library needs the sign-in",
+                       "a moved cell's conversation: follows once a4sx #2292 lands (until then it starts there anew)",
                        "which herdr pane a cell runs in: the deck matches by folder name"], "not possible yet")
         else:
             for kk, _, fn in self.ops:
@@ -1035,12 +1024,18 @@ def pane():
                 deck.msg = f"refresh failed: {e!r}"
             stop.wait(T_LOCAL)
     threading.Thread(target=loop, daemon=True).start()
+    if not WIN:   # review: herdr closing the pane (SIGHUP/SIGTERM) still runs the cleanup below (the marker goes)
+        import signal
+        for sig in (signal.SIGHUP, signal.SIGTERM):
+            signal.signal(sig, lambda *_: sys.exit(0))
     mine = os.environ.get("HERDR_PANE_ID") or ""
     if IN_HERDR and mine:   # so herdr's start and the "open" action find this deck instead of opening a second one
         try:
             os.makedirs(os.path.dirname(_marker()), exist_ok=True)
+            tab = next((p.get("tab_id") for p in (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
+                        if p.get("pane_id") == mine), "") or ""
             with open(_marker(), "w", encoding="utf-8") as f:
-                f.write(f"{mine} {os.getpid()}")
+                f.write(f"{mine} {os.getpid()} {tab}".strip())
         except OSError:
             pass
     try:
@@ -1059,7 +1054,7 @@ def pane():
         sys.stdout.write("\033[?25h\033[0m\033[2J\033[H")
         try:
             with open(_marker(), encoding="utf-8") as f:
-                if mine and f.read().strip() == f"{mine} {os.getpid()}":
+                if mine and f.read().strip().split(" ")[:2] == [mine, str(os.getpid())]:
                     os.remove(_marker())
         except OSError:
             pass

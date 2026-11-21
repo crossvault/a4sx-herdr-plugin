@@ -4,7 +4,9 @@
 
 - **The deck** (a4sx issue #2290). One pane shows the mesh, its cells, your a4sx library, the mesh's rules, this host and moving a cell (keys 1 to 5), with the selected row's operations on the right, each one key. Short commands run in place; anything you answer, or that opens the browser, runs in a new herdr tab. Everything it runs is an ordinary `a4sx` or `herdr` command; the deck stores only the id of its own pane.
 - The deck is the first thing a herdr session shows. Set `on-start` to `focus` (the default), `open` (a tab, not in front) or `off` (only the cells' names go into the agents list), with `DECK_ON_START` or one word in the file `on-start` in this plugin's config folder. After a herdr restart it starts again in its restored pane.
-- It reads locally every 5 seconds and asks the server at most once a minute (some things every 5 minutes), and waits longer each time the server says "slow down". It never reads or shows a key or a sign-in.
+- It reads locally every 5 seconds and asks the server about once a minute (some things every 5 minutes; a manual refresh asks at once), and waits longer each time the server says "slow down".
+- **herdr 0.9.5 or newer** is needed now (the deck's start hook). On herdr 0.9.1, keep plugin 0.3.3.
+- If you installed cell01's standalone `a4sx.deck` plugin, uninstall it: both would open a deck at start. The `on-start` file now lives in the `a4sx.mesh` config folder. It never reads or shows a key or a sign-in.
 - New actions: `deck` (open the deck) and `deck-label` (the cells' names in the agents list).
 - Moving a cell (view 5): **bring here** starts one of your cells that runs elsewhere on this host, signed in; **Start from a saved session** starts a cell here seeded from a saved conversation. There is no hand-off yet: the conversation follows a moved cell once a4sx #2292 lands (an exact copy; a scrubbed one would change its peers' names).
 

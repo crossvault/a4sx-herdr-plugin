@@ -60,9 +60,6 @@ class Budget(unittest.TestCase):
         self.assertFalse(re.search(r"\.key[\"']", src))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class NoHandOff(unittest.TestCase):
     def test_hand_off_is_hidden_until_a4sx_2292(self):
@@ -74,4 +71,41 @@ class NoHandOff(unittest.TestCase):
         self.assertNotIn('"hand off: move its work', src)
         self.assertIn("bring it here (starts it on this host)", src)
         self.assertIn("start from a saved session", src)
+        self.assertNotIn("def handoff", src)
+        self.assertNotIn("hands it off", src)
         self.assertIn("its conversation follows once a4sx #2292 lands", src)
+
+
+class StaleMarker(unittest.TestCase):
+    """Review: a marker left behind (herdr killed the deck's pane) must never make the deck type into another pane
+    that later got the same id."""
+
+    def _with(self, marker, panes):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "pane.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(marker)
+        answer = {"result": {"panes": panes}}
+        return path, mock.patch.object(deck, "_marker", lambda: path), mock.patch.object(deck, "jrun", lambda argv, t=30: answer), \
+            mock.patch.object(deck, "_deck_alive", lambda pid: False)
+
+    def test_another_pane_with_the_same_id_is_not_the_deck_and_the_marker_goes(self):
+        path, a, b, c = self._with("w1:p3 99999 w1:t2", [{"pane_id": "w1:p3", "tab_id": "w1:t5", "agent": "claude"}])
+        with a, b, c:
+            self.assertEqual(deck.deck_state(), (None, None, False))
+        self.assertFalse(os.path.exists(path))
+
+    def test_the_decks_own_restored_pane_is_taken_back(self):
+        path, a, b, c = self._with("w1:p3 99999 w1:t2", [{"pane_id": "w1:p3", "tab_id": "w1:t2"}])
+        with a, b, c:
+            self.assertEqual(deck.deck_state(), ("w1:p3", "w1:t2", False))
+        self.assertTrue(os.path.exists(path))
+
+    def test_an_old_marker_without_a_tab_is_never_trusted(self):
+        path, a, b, c = self._with("w1:p3 99999", [{"pane_id": "w1:p3", "tab_id": "w1:t2"}])
+        with a, b, c:
+            self.assertEqual(deck.deck_state(), (None, None, False))
+
+
+if __name__ == "__main__":
+    unittest.main()
