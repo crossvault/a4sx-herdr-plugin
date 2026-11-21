@@ -306,11 +306,13 @@ def bind_menu_key():
         raise PluginError(f"herdr didn't accept the key, so the config is as it was:\n{e}")
     try:
         run_herdr(["server", "reload-config"])
-        print("\nDone: the key works now.")
+        print("\nDone: the key works now in this herdr session; other running herdr sessions get it at their next")
+        print("reload or start.")
     except PluginError:
         print("\nAdded. It works after `herdr server reload-config` (or the next herdr start).")
     if old is not None:
         print(f"The config as it was before is in {backup}.")
+    wait_close()   # the result stays readable (an error waits in main())
 
 
 # ---------------------------------------------------------------- start a cell
@@ -576,7 +578,7 @@ def pane_peers():
                     print("(no answer within 45 seconds)")
             print()
         what = "hides the ids" if details else "shows ids and keys"
-        answer = ask(f"Enter refreshes, i {what}, q closes: ").lower()
+        answer = ask(f"Enter refreshes; i then Enter {what}; q then Enter closes: ").lower()
         if answer in ("q", "quit", "exit"):
             return
         if answer == "i":
