@@ -80,9 +80,9 @@ class NoHandOff(unittest.TestCase):
 class StopHost(unittest.TestCase):
     """a4sx #2326: a running agent host has "stop" (`a4sx agent-host stop`, the same stop as Ctrl-C); a stopped one "start"."""
 
-    def _ops(self, running):
+    def _ops(self, running, open_=("build (Team mesh)",)):
         ui = object.__new__(deck.Deck)
-        ui.d = types.SimpleNamespace(ah={"known": True, "running": running, "address": "ws://127.0.0.1:8765/", "open": []})
+        ui.d = types.SimpleNamespace(ah={"known": True, "running": running, "address": "ws://127.0.0.1:8765/", "open": list(open_)})
         return ui, {k: (label, fn) for k, label, fn in ui.host_ops()}
 
     def test_running_offers_stop_and_runs_the_clis_stop_in_the_background(self):
@@ -96,6 +96,7 @@ class StopHost(unittest.TestCase):
                 ops["S"][1]()   # asked first; "no" stops nothing
             self.assertNotIn("argv", seen)
             self.assertEqual(seen["items"], ["no", "yes, stop it"])
+            self.assertEqual(seen["asked"], "stop the agent host? «build» end (VS Code is told first)")
             with mock.patch.object(deck.Deck, "choose", lambda self, title, items, cb: cb(1)):
                 ops["S"][1]()
         self.assertEqual(seen["argv"][-2:], ["agent-host", "stop"])
@@ -110,6 +111,15 @@ class StopHost(unittest.TestCase):
                 mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (1, "", "TimeoutExpired: a4sx agent-host stop")):
             ops["S"][1]()
         self.assertIn("may still stop", " ".join(seen["lines"]))
+
+    def test_no_cell_runs_in_it_no_question(self):
+        _ui, ops = self._ops(True, open_=("x (plain)",))
+        seen = {}
+        with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(lines=fn())), \
+                mock.patch.object(deck.Deck, "choose", lambda *a: self.fail("asked")), \
+                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: seen.update(argv=argv) or (0, "stopped\n", "")):
+            ops["S"][1]()
+        self.assertEqual(seen["argv"][-2:], ["agent-host", "stop"])
 
     def test_stopped_offers_start_not_stop(self):
         _ui, ops = self._ops(False)

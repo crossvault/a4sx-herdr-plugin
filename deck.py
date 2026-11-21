@@ -756,7 +756,7 @@ class Deck:
         return ops
 
     def stop_host(self):
-        """Review: it ends every cell the host started, so it asks first (as x does for one cell)."""
+        """Review: it ends the cells the host started, so it asks first when some run (as x does for one cell)."""
         def go(i):
             if i != 1:
                 return
@@ -768,7 +768,11 @@ class Deck:
                              "this view shows when it has, and Ctrl-C in its tab stops it at once"]
                 return lines
             self.bg("stop the agent host", work)
-        self.choose("stop the agent host? Every cell it started ends (VS Code is told first)", ["no", "yes, stop it"], go)
+        names = [x.split(" (")[0] for x in self.d.ah.get("open") or [] if not x.endswith(" (plain)")]
+        if not names:   # coordinator (as the VS Code extension): nothing runs in it, so no question
+            return go(1)
+        self.choose("stop the agent host? " + ", ".join(f"«{n}»" for n in names) + " end (VS Code is told first)",
+                    ["no", "yes, stop it"], go)
 
     def bring(self, name, with_handoff):
         """Start a cell that is stored on another computer here: with the person's sign-in the server moves it."""
