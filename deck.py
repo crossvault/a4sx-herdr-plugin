@@ -764,14 +764,20 @@ class Deck:
                 rc, out, err = run([*A4SX_ARGV, "agent-host", "stop"], 45)
                 lines = lines_of((rc, out, err))[-4:]
                 if rc and err.startswith("TimeoutExpired"):   # the deck's own timeout (run says so): the host has the request
-                    lines = ["no answer within 45 s: the agent host has the request and may still stop;",
+                    lines = ["no answer within 45 s: if it got as far as asking, the agent host may still stop;",
                              "this view shows when it has, and Ctrl-C in its tab stops it at once"]
                 return lines
             self.bg("stop the agent host", work)
-        names = [x.split(" (")[0] for x in self.d.ah.get("open") or [] if not x.endswith(" (plain)")]
-        if not names:   # coordinator (as the VS Code extension): nothing runs in it, so no question
+        # review: what runs in it now (a fresh status, not the last refresh); plain conversations end too
+        now = jrun([*A4SX_ARGV, "agent-host", "status", "--json"], 20) or self.d.ah
+        opened = [str(x) for x in now.get("open") or []]
+        names = [x.rsplit(" (", 1)[0] for x in opened if not x.endswith(" (plain)")]
+        plain = sum(1 for x in opened if x.endswith(" (plain)"))
+        what = [f"«{n}»" for n in names] + ([f"{plain} plain conversation" + ("s" if plain > 1 else "")] if plain else [])
+        if not what:   # coordinator (as the VS Code extension): nothing runs in it, so no question
             return go(1)
-        self.choose("stop the agent host? " + ", ".join(f"«{n}»" for n in names) + " end (VS Code is told first)",
+        one = len(what) == 1 and not (not names and plain > 1)
+        self.choose(f"stop the agent host? {', '.join(what)} {'ends' if one else 'end'} (VS Code is told first)",
                     ["no", "yes, stop it"], go)
 
     def bring(self, name, with_handoff):

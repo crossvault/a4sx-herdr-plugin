@@ -83,6 +83,10 @@ class StopHost(unittest.TestCase):
     def _ops(self, running, open_=("build (Team mesh)",)):
         ui = object.__new__(deck.Deck)
         ui.d = types.SimpleNamespace(ah={"known": True, "running": running, "address": "ws://127.0.0.1:8765/", "open": list(open_)})
+        self._status = {"running": running, "open": list(open_)}
+        p = mock.patch.object(deck, "jrun", lambda argv, timeout=30: dict(self._status) if argv[-3:] == ["agent-host", "status", "--json"] else {})
+        p.start()
+        self.addCleanup(p.stop)
         return ui, {k: (label, fn) for k, label, fn in ui.host_ops()}
 
     def test_running_offers_stop_and_runs_the_clis_stop_in_the_background(self):
@@ -96,7 +100,7 @@ class StopHost(unittest.TestCase):
                 ops["S"][1]()   # asked first; "no" stops nothing
             self.assertNotIn("argv", seen)
             self.assertEqual(seen["items"], ["no", "yes, stop it"])
-            self.assertEqual(seen["asked"], "stop the agent host? «build» end (VS Code is told first)")
+            self.assertEqual(seen["asked"], "stop the agent host? «build» ends (VS Code is told first)")
             with mock.patch.object(deck.Deck, "choose", lambda self, title, items, cb: cb(1)):
                 ops["S"][1]()
         self.assertEqual(seen["argv"][-2:], ["agent-host", "stop"])
@@ -112,8 +116,20 @@ class StopHost(unittest.TestCase):
             ops["S"][1]()
         self.assertIn("may still stop", " ".join(seen["lines"]))
 
+    def test_the_question_reads_a_fresh_status_and_counts_plain_conversations(self):
+        _ui, ops = self._ops(True, open_=())
+        self._status = {"running": True, "open": ["build (Team mesh)", "docs (Team mesh)", "chat (plain)"]}   # opened since the refresh
+        seen = {}
+        with mock.patch.object(deck.Deck, "choose", lambda self_, title, items, cb: seen.update(asked=title)):
+            ops["S"][1]()
+        self.assertEqual(seen["asked"], "stop the agent host? «build», «docs», 1 plain conversation end (VS Code is told first)")
+        self._status = {"running": True, "open": ["a (plain)", "b (plain)"]}
+        with mock.patch.object(deck.Deck, "choose", lambda self_, title, items, cb: seen.update(asked=title)):
+            ops["S"][1]()
+        self.assertEqual(seen["asked"], "stop the agent host? 2 plain conversations end (VS Code is told first)")
+
     def test_no_cell_runs_in_it_no_question(self):
-        _ui, ops = self._ops(True, open_=("x (plain)",))
+        _ui, ops = self._ops(True, open_=())
         seen = {}
         with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(lines=fn())), \
                 mock.patch.object(deck.Deck, "choose", lambda *a: self.fail("asked")), \
