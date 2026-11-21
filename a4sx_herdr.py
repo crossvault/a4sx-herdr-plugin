@@ -232,17 +232,22 @@ def herdr_config_path():
 
 
 def herdr_prefix():
-    """herdr's prefix key as config.toml sets it (`prefix = "ctrl+space"` under [keys]), shown as "Ctrl+Space";
-    herdr's default "Ctrl+b" when the file doesn't set one."""
+    """herdr's prefix key as config.toml sets it under [keys] (`prefix = "ctrl+space"`, or the first of
+    `prefix = ["ctrl+space", "ctrl+s"]`), shown as "Ctrl+Space"; herdr's default "Ctrl+b" when the file sets none;
+    "your herdr prefix key" when it sets one this file can't read."""
     try:
         with open(herdr_config_path(), encoding="utf-8") as f:
             text = f.read(1 << 20)
-    except OSError:
-        text = ""
-    m = re.search(r'(?ms)^\[keys\]\s*$(.*?)(?=^\[)', text + "\n[") 
-    m = re.search(r'(?m)^\s*prefix\s*=\s*"([A-Za-z0-9+_-]{1,32})"', m.group(1)) if m else None
-    raw = m.group(1) if m else "ctrl+b"
-    return "+".join(part if len(part) == 1 else part[:1].upper() + part[1:] for part in raw.split("+"))
+    except (OSError, ValueError):
+        return "Ctrl+b"
+    table = re.search(r'(?ms)^\[keys\][ \t]*(?:#[^\n]*)?$(.*?)(?=^\[)', text + "\n[")
+    body = table.group(1) if table else ""
+    if not re.search(r'(?m)^\s*prefix\s*=', body) and not re.search(r'(?m)^\s*keys\.prefix\s*=', text):
+        return "Ctrl+b"
+    m = re.search(r'(?m)^\s*prefix\s*=\s*(?:\[\s*)?["\']([A-Za-z0-9+_-]{1,32})["\']', body)
+    if not m:
+        return "your herdr prefix key"
+    return "+".join(part if len(part) == 1 else part[:1].upper() + part[1:] for part in m.group(1).split("+"))
 
 
 def menu_key_bound():
@@ -376,17 +381,11 @@ def load_launch_args(cell):
 
 
 def running_here(exe, cell):
-    """The cell already runs on this machine: `a4sx mesh cells --json` says so (`local.state`, a4sx 0.25 or newer);
-    an older a4sx: the cell's own row in the mesh's list is online. A second start would be refused."""
+    """The cell already runs on this machine: `a4sx mesh cells --json` says so (`local.state`, a4sx 0.25 or newer,
+    from this machine's own running proxies). Nothing else is guessed: "online" in the mesh's list can be another
+    machine after a start elsewhere. A second start here would be refused."""
     local = cell.get("local")
-    if isinstance(local, dict) and local.get("state") in ("running", "stored"):
-        return local.get("state") == "running"
-    if not MESH_REF_RE.fullmatch(str(cell.get("mesh_id") or "")):
-        return False
-    peers = mesh_peers_json(exe, cell)
-    iid = cell.get("instance_id")
-    mine = [p for p in peers or [] if isinstance(p, dict) and iid and p.get("instance_id") == iid]
-    return len(mine) == 1 and mine[0].get("presence") == "online"
+    return isinstance(local, dict) and local.get("state") == "running"
 
 
 def still_waiting(exe, cell):
