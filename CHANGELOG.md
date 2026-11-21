@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 - 2026-11-21
+
+From cell01's round trip with a real Claude Code (a4sx #2309):
+- **Fewer questions.** A backup no longer asks how to upload. The deck's `upload` setting decides: `scrubbed` (the default) or `keep-names`, set in the file `upload` or with `DECK_UPLOAD`. The operation and its result show it. "As it is" is no longer offered: until a4sx #2292 the server scrubs every upload, so it wasn't as it is.
+- Starting from a hand-off named after a cell stored here (`handoff-<cell>`) goes to that cell without asking which one.
+- The move view (5) reads your library again when it opens (one `a4sx list`), so a version pushed meanwhile is listed.
+
 ## 0.4.0 - 2026-11-21
 
 - **The deck** (a4sx issue #2290). One pane shows the mesh, its cells, your a4sx library, the mesh's rules, this host and moving a cell (keys 1 to 5), with the selected row's operations on the right, each one key. Short commands run in place; anything you answer, or that opens the browser, runs in a new herdr tab. Everything it runs is an ordinary `a4sx` or `herdr` command; the deck stores only the id of its own pane.

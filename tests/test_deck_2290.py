@@ -296,6 +296,55 @@ class Cell01BringUp(unittest.TestCase):
         self.assertIn('os.path.basename((x.get("cwd") or "").rstrip("/")) == name', src)
 
 
+class FewerQuestions(unittest.TestCase):
+    """cell01's hand-off round trip: the upload mode is a setting (no question); a hand-off named after a cell here
+    goes to it; the move view re-reads the library when it opens."""
+
+    def test_the_upload_mode_is_a_setting_scrubbed_by_default_and_as_it_is_is_not_offered(self):
+        d = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": d}, clear=False):
+            os.environ.pop("DECK_UPLOAD", None)
+            self.assertEqual(deck.upload_mode(), "scrubbed")
+            with open(os.path.join(d, "upload"), "w", encoding="utf-8") as f:
+                f.write("keep-names\n")
+            self.assertEqual(deck.upload_mode(), "keep-names")
+            with open(os.path.join(d, "upload"), "w", encoding="utf-8") as f:
+                f.write("as-it-is\n")
+            self.assertEqual(deck.upload_mode(), "scrubbed", "not offered until a4sx #2292")
+        self.assertNotIn("--no-scrub", [v[0] for v in deck.UPLOAD_MODES.values()])
+        ui = object.__new__(deck.Deck)
+        ui.choose = lambda *a: self.fail("asked")
+        got = []
+        with mock.patch.object(deck, "upload_mode", lambda: "keep-names"):
+            ui.with_scrub("backup", got.append)
+        self.assertEqual(got, ["--keep-pii"])
+
+    def test_a_hand_off_named_after_a_cell_here_goes_to_it_without_a_question(self):
+        ui = object.__new__(deck.Deck)
+        ui.d = types.SimpleNamespace(rows=[{"name": "build", "here": True, "running": False}, {"name": "docs", "here": True, "running": False}])
+        ui.choose = lambda *a: self.fail("asked")
+        seen = []
+        ui.start_seeded = lambda r, saved: seen.append((r["name"], saved))
+        ui.takeover("handoff-docs")
+        self.assertEqual(seen, [("docs", "handoff-docs")])
+        asked = []
+        ui.choose = lambda title, items, cb: asked.append(title)
+        ui.takeover("handoff-elsewhere")
+        self.assertEqual(asked, ["which cell of this host continues «handoff-elsewhere»?"])
+
+    def test_the_move_view_reads_the_library_once_when_it_opens(self):
+        ui = object.__new__(deck.Deck)
+        calls = []
+        ui.d = types.SimpleNamespace(seen_limit=0, library=[{"name": "x", "vers": "8"}],
+                                     load_library=lambda: calls.append(1) or [{"name": "x", "vers": "9"}])
+        with mock.patch.object(deck.threading, "Thread", lambda target, daemon: types.SimpleNamespace(start=target)):
+            ui.reload_library()
+        self.assertEqual(calls, [1])
+        self.assertEqual(ui.d.library[0]["vers"], "9")
+        with open(SRC, encoding="utf-8") as f:
+            self.assertIn('if self.view == "move":', f.read())
+
+
 class StaleMarker(unittest.TestCase):
     """Review: a marker left behind (herdr killed the deck's pane) must never make the deck type into another pane
     that later got the same id."""

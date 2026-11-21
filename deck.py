@@ -316,19 +316,38 @@ def deck_pane_id():
     return pane if alive else None
 
 
-def on_start_mode():
-    """What herdr's start does: "focus" (the default: the deck is the first thing shown), "open" (a tab, not focused)
-    or "off". From DECK_ON_START, else the one word in the plugin's config folder, file `on-start`."""
-    v = os.environ.get("DECK_ON_START", "").strip().lower()
+def _setting(env, name):
+    """A deck setting: the environment variable `env`, else the one word in the file `name` of the plugin's config
+    folder ("" when neither)."""
+    v = os.environ.get(env, "").strip().lower()
     if not v:
         d = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or os.path.join(
             os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "herdr", "plugins", "config", PLUGIN_ID)
         try:
-            with open(os.path.join(d, "on-start"), encoding="utf-8") as f:
+            with open(os.path.join(d, name), encoding="utf-8") as f:
                 v = f.read().strip().lower()
         except OSError:
             v = ""
+    return v
+
+
+def on_start_mode():
+    """What herdr's start does: "focus" (the default: the deck is the first thing shown), "open" (a tab, not focused)
+    or "off". From DECK_ON_START, else the one word in the plugin's config folder, file `on-start`."""
+    v = _setting("DECK_ON_START", "on-start")
     return v if v in ("focus", "open", "off") else "focus"
+
+
+#: cell01 (#2309): how the deck uploads a conversation, a setting instead of a question each time. "as it is"
+#: (--no-scrub) is left out until a4sx #2292: the server scrubs every push today, so it wouldn't be as it is.
+UPLOAD_MODES = {"scrubbed": ("", "scrubbed (secrets, personal data, host names and paths removed)"),
+                "keep-names": ("--keep-pii", "names, hosts and paths kept; secrets removed")}
+
+
+def upload_mode():
+    """The `upload` setting (DECK_UPLOAD, else the file `upload`): "scrubbed" (the default) or "keep-names"."""
+    v = _setting("DECK_UPLOAD", "upload")
+    return v if v in UPLOAD_MODES else "scrubbed"
 
 
 def open_deck(focus=True):
@@ -638,14 +657,20 @@ class Deck:
                     return max(mine, key=os.path.getmtime)
         return max(files, key=os.path.getmtime) if files else None
 
-    SCRUB = [("", "scrubbed: secrets, personal data, host names and paths are removed (a4sx's default)"),
-             ("--keep-pii", "keep names, hosts and paths; secrets are still removed"),
-             ("--no-scrub", "as it is: nothing is removed on this computer")]
+    def reload_library(self):
+        """One `a4sx list` in the background (skipped while the server says "slow down")."""
+        if LIMITED[0] > self.d.seen_limit:
+            return
+
+        def work():
+            got = self.d.load_library()
+            if got is not None:
+                self.d.library = got
+        threading.Thread(target=work, daemon=True).start()
 
     def with_scrub(self, what, cb):
-        """Ask how the upload is to be treated, then run cb(flag)."""
-        self.choose(f"{what}: how should the conversation be uploaded?", [x[1] for x in self.SCRUB] + ["cancel"],
-                    lambda i: i < len(self.SCRUB) and cb(self.SCRUB[i][0]))
+        """cell01: no question; the `upload` setting (shown in the op's label and the result) gives the flag."""
+        return cb(UPLOAD_MODES[upload_mode()][0])
 
     def push(self, r, label, title, flag=""):
         """Save the cell's newest conversation under `label` (a new version when it exists). (ok, lines)"""
@@ -661,7 +686,8 @@ class Deck:
         cs = re.search(r"client scrub: ([a-z0-9 ]+)", txt)
         ss = re.search(r"server scrub: (\d+) redaction", txt)
         ok = res[0] == 0
-        return ok, ([f"saved {os.path.basename(f)[:8]}… as «{label}»" + (f" ({st.group(1)})" if st else "")
+        return ok, ([f"saved {os.path.basename(f)[:8]}… as «{label}», {UPLOAD_MODES[upload_mode()][1].split(' (')[0]} (setting `upload`)"
+                     + (f" ({st.group(1)})" if st else "")
                      + (f"; on this computer: {cs.group(1).strip()}" if cs else "")
                      + (f"; on the server: {ss.group(1)} redaction(s)" if ss else "")]
                     + ([f"{DIM}note: today the copy that comes back from the library is redacted in any case (names, home paths){RS}"]
@@ -678,7 +704,7 @@ class Deck:
                             f"prompt to {r['name']}", lambda: ["sent; its pane shows the answer (g)"] if run(
                                 [HERDR, "agent", "prompt", r["pane"], t])[0] == 0 else ["herdr could not send it"])))]
             if r["running"]:
-                ops += [("b", "back up its conversation …", lambda: self.with_scrub(f"backup of {r['name']}", lambda fl: self.bg(
+                ops += [("b", f"back up its conversation ({UPLOAD_MODES[upload_mode()][1].split(' (')[0]}; setting `upload`)", lambda: self.with_scrub(f"backup of {r['name']}", lambda fl: self.bg(
                             f"backup of {r['name']}", lambda: self.push(r, f"{r['name']}-backup", f"{r['name']}: backups from the deck", fl)[1]))),
                         ("x", "stop it here", lambda: self.choose(f"stop {r['name']} on this host?", ["no", "yes, stop it"],
                          lambda i: i == 1 and self.bg(f"stop {r['name']}", lambda: lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]])))))]
@@ -746,6 +772,9 @@ class Deck:
         if not here:
             return self.note(["no cell is stored on this host: redeem a cell code first (a4sx launch --cell -)"])
         want = saved[len("handoff-"):] if saved.startswith("handoff-") else ""
+        named = [r for r in here if r["name"] == want]
+        if named:   # cell01: a hand-off named after a cell stored here goes to that cell, no question
+            return self.start_seeded(named[0], saved)
         here.sort(key=lambda r: r["name"] != want)
         self.choose(f"which cell of this host continues «{saved}»?",
                     [r["name"] + (f"  {DIM}running: it is stopped first{RS}" if r["running"] else "") for r in here],
@@ -1087,6 +1116,8 @@ class Deck:
             return False
         if k in ("1", "2", "3", "4", "5"):
             self.view = VIEWS[int(k) - 1]
+            if self.view == "move":   # cell01: the move view lists the library as it is now (one call on open)
+                self.reload_library()
         elif k in ("up", "k"):
             self.sel[self.view] = max(0, min(self.sel[self.view], n - 1) - 1)
         elif k in ("down", "j"):
