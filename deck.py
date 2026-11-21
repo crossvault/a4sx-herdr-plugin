@@ -341,7 +341,8 @@ def on_start_mode():
 #: cell01 (#2309): how the deck uploads a conversation, a setting instead of a question each time. "as it is"
 #: (--no-scrub) is left out until a4sx #2292: the server scrubs every push today, so it wouldn't be as it is.
 UPLOAD_MODES = {"scrubbed": ("", "scrubbed (secrets, personal data, host names and paths removed)"),
-                "keep-names": ("--keep-pii", "names, hosts and paths kept; secrets removed")}
+                "keep-names": ("--keep-pii", "names, hosts and paths kept on this computer (the server still redacts "
+                                             "them until a4sx #2292); secrets removed")}
 
 
 def upload_mode():
@@ -659,7 +660,7 @@ class Deck:
 
     def reload_library(self):
         """One `a4sx list` in the background (skipped while the server says "slow down")."""
-        if LIMITED[0] > self.d.seen_limit:
+        if LIMITED[0] > self.d.seen_limit or time.time() < getattr(self.d, "slow_until", 0):   # review: no call while slowed down
             return
 
         def work():
@@ -773,8 +774,11 @@ class Deck:
             return self.note(["no cell is stored on this host: redeem a cell code first (a4sx launch --cell -)"])
         want = saved[len("handoff-"):] if saved.startswith("handoff-") else ""
         named = [r for r in here if r["name"] == want]
-        if named:   # cell01: a hand-off named after a cell stored here goes to that cell, no question
+        if named and not named[0]["running"]:   # cell01: a hand-off named after a stopped cell here goes to it, no question
             return self.start_seeded(named[0], saved)
+        if named:   # review: a running one is stopped first, so that is asked (as x and S ask)
+            return self.choose(f"«{want}» runs here: stop it and start it from «{saved}»?", ["no", "yes, stop it and continue"],
+                               lambda i: i == 1 and self.start_seeded(named[0], saved))
         here.sort(key=lambda r: r["name"] != want)
         self.choose(f"which cell of this host continues «{saved}»?",
                     [r["name"] + (f"  {DIM}running: it is stopped first{RS}" if r["running"] else "") for r in here],
@@ -1115,8 +1119,8 @@ class Deck:
         if k in ("q", "\x03"):
             return False
         if k in ("1", "2", "3", "4", "5"):
-            self.view = VIEWS[int(k) - 1]
-            if self.view == "move":   # cell01: the move view lists the library as it is now (one call on open)
+            was, self.view = self.view, VIEWS[int(k) - 1]
+            if self.view == "move" and was != "move":   # cell01: the library as it is now, one call when it opens
                 self.reload_library()
         elif k in ("up", "k"):
             self.sel[self.view] = max(0, min(self.sel[self.view], n - 1) - 1)

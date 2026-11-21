@@ -3,9 +3,9 @@
 ## 0.4.1 - 2026-11-21
 
 From cell01's round trip with a real Claude Code (a4sx #2309):
-- **Fewer questions.** A backup no longer asks how to upload. The deck's `upload` setting decides: `scrubbed` (the default) or `keep-names`, set in the file `upload` or with `DECK_UPLOAD`. The operation and its result show it. "As it is" is no longer offered: until a4sx #2292 the server scrubs every upload, so it wasn't as it is.
-- Starting from a hand-off named after a cell stored here (`handoff-<cell>`) goes to that cell without asking which one.
-- The move view (5) reads your library again when it opens (one `a4sx list`), so a version pushed meanwhile is listed.
+- **Fewer questions.** A backup (b) no longer asks how to upload, and it uploads at once. The deck's `upload` setting decides: `scrubbed` (the default) or `keep-names`, set in the file `upload` or with `DECK_UPLOAD`. The operation and its result show it. "As it is" is no longer offered: until a4sx #2292 the server scrubs every upload, so it wasn't as it is.
+- Starting from a hand-off named after a cell stored here (`handoff-<cell>`) goes to that cell without asking which one. If that cell is running, the deck asks first, because it is stopped before the start. `keep-names` keeps them on this computer; the server still redacts them until a4sx #2292.
+- The move view (5) reads your library again when you switch to it (one `a4sx list`, none while the server says "slow down"), so a version pushed meanwhile is listed.
 
 ## 0.4.0 - 2026-11-21
 

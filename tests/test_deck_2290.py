@@ -4,6 +4,7 @@ import importlib.util
 import os
 import re
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -332,12 +333,25 @@ class FewerQuestions(unittest.TestCase):
         ui.takeover("handoff-elsewhere")
         self.assertEqual(asked, ["which cell of this host continues «handoff-elsewhere»?"])
 
+    def test_a_running_named_cell_is_asked_about_and_no_stops_nothing(self):
+        ui = object.__new__(deck.Deck)
+        ui.d = types.SimpleNamespace(rows=[{"name": "docs", "here": True, "running": True}])
+        seen, asked = [], []
+        ui.start_seeded = lambda r, saved: seen.append(r["name"])
+        for answer in (0, 1):
+            ui.choose = lambda title, items, cb: (asked.append((title, items)), cb(answer))
+            ui.takeover("handoff-docs")
+        self.assertEqual(asked[0], ("«docs» runs here: stop it and start it from «handoff-docs»?", ["no", "yes, stop it and continue"]))
+        self.assertEqual(seen, ["docs"], "only after the yes")
+
     def test_the_move_view_reads_the_library_once_when_it_opens(self):
         ui = object.__new__(deck.Deck)
         calls = []
         ui.d = types.SimpleNamespace(seen_limit=0, library=[{"name": "x", "vers": "8"}],
                                      load_library=lambda: calls.append(1) or [{"name": "x", "vers": "9"}])
         with mock.patch.object(deck.threading, "Thread", lambda target, daemon: types.SimpleNamespace(start=target)):
+            ui.reload_library()
+            ui.d.slow_until = time.time() + 60   # the server said "slow down": no call
             ui.reload_library()
         self.assertEqual(calls, [1])
         self.assertEqual(ui.d.library[0]["vers"], "9")
