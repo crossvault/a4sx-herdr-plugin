@@ -23,11 +23,13 @@ herdr plugin install crossvault/a4sx-herdr-plugin
 herdr plugin action list --plugin a4sx.mesh
 ```
 
+To pin a version, give `--ref` a branch, a tag or the FULL commit id: herdr hands it to `git fetch`, which can't fetch a short commit id.
+
 herdr shows what the plugin declares and asks before it installs. The second command lists four actions: `menu`, `start-cell`, `peers`, `join`.
 
 To work on the plugin, clone the repository and run `herdr plugin link /path/to/a4sx-herdr-plugin` instead.
 
-**Bind a key first.** herdr has no menu for plugin actions, so one key opens the plugin's menu. The easiest way: open the menu once (below) and choose **4**; the plugin adds the key to herdr's config after you say yes (it backs the file up first and checks it with `herdr config check`). Or add this to `~/.config/herdr/config.toml` yourself:
+**Bind a key first.** herdr has no menu for plugin actions, so one key opens the plugin's menu. The easiest way: open the menu once (below) and choose **4**; the plugin adds the key to herdr's config (for all your herdr sessions; named sessions have none of their own) after you say yes (it backs the file up first and checks it with `herdr config check`). Or add this to `~/.config/herdr/config.toml` yourself:
 
 ```toml
 [[keys.command]]
@@ -52,7 +54,7 @@ If you linked a clone, run `herdr plugin link` on the folder again after you upd
 | Choice | What happens |
 |---|---|
 | **1 Start a cell** | Lists the cells on this machine. You type a number. The plugin splits the pane you were in and types `a4sx launch --cell NAME` there, in the same folder. |
-| **2 Mesh peers** | For each of your cells in a mesh: every session by name, where it is (this cell, this machine, your other machine, another person's) and its status (online, offline, waits for approval, …). `i` shows the ids and keys, Enter refreshes, `q` closes. An a4sx older than 0.25 shows its own table instead. |
+| **2 Mesh peers** | For each of your cells in a mesh: every session by name, where it is (this cell, this machine, your other machine, another account's) and its status (online, offline, waits for approval, …). `i` shows the ids and keys, Enter refreshes, `q` closes. An a4sx older than 0.25 shows its own table instead. |
 | **3 Join a mesh** | Opens a pane and runs `a4sx mesh join -`. You paste the invitation link there. a4sx shows the invitation and asks before it joins. |
 | **4 Open this menu with a key** | Shown only while no key opens the menu. Adds the key to herdr's config.toml after you say yes (see above). |
 

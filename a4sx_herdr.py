@@ -123,8 +123,8 @@ def own_cells():
     """This machine's cells, from `a4sx mesh cells --json`.
 
     Each cell is a JSON object; this file reads its `name`, `instance_id`,
-    `mesh_id`, `mesh_name`, `needs_approval` and `default` (true for the
-    default cell).
+    `mesh_id`, `mesh_name`, `needs_approval`, `default` (true for the
+    default cell), `local.state` and `registry.state` (a4sx 0.25 or newer).
     """
     exe = a4sx_path()
     try:
@@ -224,8 +224,25 @@ MENU_BINDING = (
 
 
 def herdr_config_path():
+    """The config.toml herdr reads: $HERDR_CONFIG_PATH when set, else $XDG_CONFIG_HOME/herdr (~/.config/herdr)."""
+    if os.environ.get("HERDR_CONFIG_PATH"):
+        return os.environ["HERDR_CONFIG_PATH"]
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return os.path.join(base, "herdr", "config.toml")
+
+
+def herdr_prefix():
+    """herdr's prefix key as config.toml sets it (`prefix = "ctrl+space"` under [keys]), shown as "Ctrl+Space";
+    herdr's default "Ctrl+b" when the file doesn't set one."""
+    try:
+        with open(herdr_config_path(), encoding="utf-8") as f:
+            text = f.read(1 << 20)
+    except OSError:
+        text = ""
+    m = re.search(r'(?ms)^\[keys\]\s*$(.*?)(?=^\[)', text + "\n[") 
+    m = re.search(r'(?m)^\s*prefix\s*=\s*"([A-Za-z0-9+_-]{1,32})"', m.group(1)) if m else None
+    raw = m.group(1) if m else "ctrl+b"
+    return "+".join(part if len(part) == 1 else part[:1].upper() + part[1:] for part in raw.split("+"))
 
 
 def menu_key_bound():
@@ -235,22 +252,26 @@ def menu_key_bound():
             text = f.read(1 << 20)
     except OSError:
         return False
-    return re.search(r'command\s*=\s*"' + re.escape(MENU_ACTION) + '"', text) is not None
+    return re.search(r'(?m)^\s*command\s*=\s*"' + re.escape(MENU_ACTION) + '"', text) is not None   # not a comment
 
 
 def bind_menu_key():
     """Add the menu's key to herdr's config.toml, only after a yes: a backup first, `herdr config check` after (the
     backup goes back if it fails), then `herdr server reload-config`."""
     path = herdr_config_path()
-    print(f"This adds a key for the a4sx menu to {path}:")
+    print(f"This adds a key for the a4sx menu to herdr's config, for all your herdr sessions ({path}):")
     print(MENU_BINDING)
-    print(f"Then your herdr prefix key, then `{MENU_KEY.split('+', 1)[1]}`, opens this menu. If that key is taken,")
-    print("edit the line later; `herdr config check` names a clash.")
+    print(f"Then {herdr_prefix()}, then {MENU_KEY.split('+', 1)[1]}, opens this menu in every herdr session. If that key is")
+    print("taken, edit the line later; `herdr config check` names a clash.")
     if ask("Add it now? [y/N] ").lower() not in ("y", "yes"):
         return
+    try:   # a config herdr already complains about: say so, change nothing (the key couldn't be checked)
+        run_herdr(["config", "check"])
+    except PluginError as e:
+        raise PluginError(f"herdr's config has a problem already, so nothing was changed. Fix it first:\n{e}")
     backup = path + ".a4sx-backup"
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, "rb") as f:   # bytes: the file goes back exactly as it was
             old = f.read()
     except FileNotFoundError:
         old = None
@@ -258,11 +279,12 @@ def bind_menu_key():
         raise PluginError(f"herdr's config can't be read ({e.__class__.__name__}); nothing was changed.")
     try:
         if old is not None:
-            with open(backup, "w", encoding="utf-8") as f:
+            with open(backup, "wb") as f:
                 f.write(old)
+            shutil.copymode(path, backup)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(MENU_BINDING)
+        with open(path, "ab") as f:
+            f.write(MENU_BINDING.encode("utf-8"))
     except OSError as e:
         raise PluginError(f"herdr's config can't be written ({e.__class__.__name__}); nothing was changed.")
     try:
@@ -272,7 +294,7 @@ def bind_menu_key():
             if old is None:
                 os.unlink(path)
             else:
-                with open(path, "w", encoding="utf-8") as f:
+                with open(path, "wb") as f:
                     f.write(old)
         except OSError:
             pass
@@ -353,14 +375,33 @@ def load_launch_args(cell):
     return default + own
 
 
+def running_here(exe, cell):
+    """The cell already runs on this machine: `a4sx mesh cells --json` says so (`local.state`, a4sx 0.25 or newer);
+    an older a4sx: the cell's own row in the mesh's list is online. A second start would be refused."""
+    local = cell.get("local")
+    if isinstance(local, dict) and local.get("state") in ("running", "stored"):
+        return local.get("state") == "running"
+    if not MESH_REF_RE.fullmatch(str(cell.get("mesh_id") or "")):
+        return False
+    peers = mesh_peers_json(exe, cell)
+    iid = cell.get("instance_id")
+    mine = [p for p in peers or [] if isinstance(p, dict) and iid and p.get("instance_id") == iid]
+    return len(mine) == 1 and mine[0].get("presence") == "online"
+
+
 def still_waiting(exe, cell):
     """`needs_approval` is what a4sx noted when the cell was made, and an a4sx that predates the fix never clears it. The
     mesh's own list says whether the cell is active now (its own row, `a4sx mesh peers --json`); when that can't be
     read, the note stays."""
-    if not MESH_REF_RE.fullmatch(str(cell.get("mesh_id") or "")):
+    reg = cell.get("registry")
+    state = reg.get("state") if isinstance(reg, dict) else None
+    if state in ("active", "pending", "reserved"):   # `mesh cells --json` asked the server already (signed in)
+        return state != "active"
+    iid = cell.get("instance_id")
+    if not iid or not MESH_REF_RE.fullmatch(str(cell.get("mesh_id") or "")):
         return True
     peers = mesh_peers_json(exe, cell)
-    mine = [p for p in peers or [] if isinstance(p, dict) and p.get("instance_id") == cell.get("instance_id")]
+    mine = [p for p in peers or [] if isinstance(p, dict) and p.get("instance_id") == iid]
     return not (len(mine) == 1 and mine[0].get("state") == "active")
 
 
@@ -381,6 +422,8 @@ def pane_cell_picker():
             print(f"   -  {name!r}: not a valid cell name, left out")
             continue
         notes = []
+        if running_here(exe, cell):
+            notes.append("running here")
         if cell.get("needs_approval") and still_waiting(exe, cell):
             notes.append("waits for approval in its mesh")
         if cell.get("default") is True:
@@ -465,7 +508,8 @@ def peer_lines(peers, me, here, details=False):
         elif p.get("own") is True:
             where = "your other machine"
         else:
-            where = "another person's"
+            # an account is all this file knows: one person's second account is never shown as another person
+            where = "another account's"
         state = PEER_STATE.get(str(p.get("state") or "unknown"), printable(p.get("state") or "", 24))
         presence = p.get("presence")
         if state == "active" and presence in ("online", "offline", "away"):
@@ -482,7 +526,7 @@ def peer_lines(peers, me, here, details=False):
     for name, where, state, iid, aid in rows:
         out.append(f"  {name:<{w1}}  {where:<{w2}}  {state}")
         if details:
-            out.append(f"  {'':<{w1}}  id {iid or '?'}" + (f", key {aid}" if aid else ""))
+            out.append(f"  {'':<{w1}}  id {printable(iid, 40) or '?'}" + (f", key {aid}" if aid else ""))
     return out
 
 
