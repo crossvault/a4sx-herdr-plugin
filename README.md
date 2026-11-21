@@ -25,7 +25,11 @@ herdr plugin action list --plugin a4sx.mesh
 
 To pin a version, give `--ref` a branch, a tag or the FULL commit id: herdr hands it to `git fetch`, which can't fetch a short commit id.
 
-herdr shows what the plugin declares and asks before it installs. Over SSH, with no terminal to answer in (`herdr --remote … plugin install`), add `--yes`. The second command lists four actions: `menu`, `start-cell`, `peers`, `join`.
+herdr shows what the plugin declares and asks before it installs. Over SSH, with no terminal to answer in (`herdr --remote … plugin install`), add `--yes`. The second command lists six actions: `menu`, `start-cell`, `peers`, `join`, `deck`, `deck-label`.
+
+## The deck (0.4.0)
+
+`herdr plugin action invoke --plugin a4sx.mesh deck` opens the deck: the mesh, its cells, your library, the mesh's rules, this host and moving a cell (keys 1 to 5), with each selected row's operations one key away. It opens by itself when a herdr session starts; to change that, put one word into `on-start` in this plugin's config folder (`focus`, the default; `open`; or `off`) or set `DECK_ON_START`. It reads locally every 5 seconds and asks the server about once a minute (a manual refresh with `.` asks at once; when the server says "slow down", it waits longer each time). It needs herdr 0.9.5 or newer for its start hook.
 
 To work on the plugin, clone the repository and run `herdr plugin link /path/to/a4sx-herdr-plugin` instead.
 

@@ -1,8 +1,8 @@
 id = "a4sx.mesh"
 name = "a4sx mesh"
-version = "0.3.3"
-min_herdr_version = "0.9.1"
-description = "Start a4sx cells in panes, show mesh peers, join a mesh from an invitation"
+version = "0.4.0"
+min_herdr_version = "0.9.5"   # 0.4.0: the deck's [[startup]] hook and tab pane were seen working on 0.9.5
+description = "Start a4sx cells in panes, show mesh peers, join a mesh from an invitation; the deck: the mesh, its cells and your library in one pane"
 platforms = ["linux"]
 
 [[actions]]
@@ -52,3 +52,27 @@ id = "join"
 title = "a4sx: join a mesh"
 placement = "overlay"
 command = ["python3", "a4sx_herdr.py", "pane-join"]
+
+# 0.4.0 (a4sx #2290): the deck, the mesh, its cells and your a4sx library in one pane, with operations on each.
+# It is the first thing a herdr session shows (on-start: focus | open | off, from DECK_ON_START or the file
+# `on-start` in this plugin's config folder; with off, only the cells' names go into the agents list).
+[[actions]]
+id = "deck"
+title = "a4sx deck: open the mesh overview"
+contexts = ["workspace"]
+command = ["python3", "deck.py", "open"]
+
+[[actions]]
+id = "deck-label"
+title = "a4sx deck: show the cells' names in the agents list"
+contexts = ["workspace"]
+command = ["python3", "deck.py", "label"]
+
+[[startup]]
+command = ["python3", "deck.py", "start"]
+
+[[panes]]
+id = "deck"
+title = "a4sx deck"
+placement = "tab"
+command = ["python3", "deck.py", "pane"]
