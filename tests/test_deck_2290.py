@@ -543,6 +543,88 @@ class IdleShell(unittest.TestCase):
                 self.assertEqual(len(asked), 1)
 
 
+class LeftoverFollowUps(unittest.TestCase):
+    """Follow-ups after 0.4.1 (cell01's herdr 0.9.5 facts): (a) only the cell's own remembered pane is reused; (b) its
+    leftover tabs can be closed when every pane is a bare prompt, after a yes; (c) ctrl+u before typing, idle only."""
+
+    def setUp(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(deck, "_marker", lambda: os.path.join(d, "pane-x.txt")).start()
+        mock.patch.object(deck, "IN_HERDR", True).start()
+        mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)).start()
+        mock.patch.object(deck.threading, "Thread", lambda target, daemon: types.SimpleNamespace(start=target)).start()
+        self.ran, self.idle = [], set()
+        self.panes = [{"pane_id": "w1:p1", "tab_id": "w1:t1"}, {"pane_id": "w1:p3", "tab_id": "w1:t2"},
+                      {"pane_id": "w1:p5", "tab_id": "w1:t3"}, {"pane_id": "w1:p6", "tab_id": "w1:t3"}]
+
+        def jrun(argv, t=30):
+            if argv[1:3] == ["pane", "list"]:
+                return {"result": {"panes": self.panes}}
+            if argv[1:3] == ["pane", "get"]:
+                p = next((x for x in self.panes if x["pane_id"] == argv[3]), None)
+                return {"result": {"pane": p}} if p else {}
+            return {}
+        mock.patch.object(deck, "jrun", jrun).start()
+        mock.patch.object(deck, "pane_is_idle_shell", lambda p: p in self.idle).start()
+        mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: self.ran.append(argv[1:]) or (0, "", "")).start()
+        self.cwd = d
+
+    def test_c_ctrl_u_goes_first_and_only_into_an_idle_shell(self):
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.idle = {"w1:p3"}
+        deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build", reuse=("w1:p3", "w1:t2"))
+        self.assertEqual(self.ran[0], ["pane", "send-keys", "w1:p3", "ctrl+u"])
+        self.assertEqual(self.ran[1][:3], ["pane", "run", "w1:p3"])
+        self.ran.clear()
+        self.idle = set()   # the person said yes, but process-info can't tell: no key that means something else in less
+        deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build", reuse=("w1:p3", "w1:t2"))
+        self.assertNotIn("send-keys", [r[1] for r in self.ran])
+
+    def test_a_only_the_cells_own_remembered_pane(self):
+        deck._remember_cell_pane("docs", "w1:p3", "w1:t2")
+        self.idle = {"w1:p3", "w1:p5", "w1:p6"}
+        self.assertIsNone(deck._leftover_pane("build"), "an idle pane of another cell or folder is never taken")
+
+    def test_b_leftover_tabs_are_those_whose_every_pane_is_a_bare_prompt(self):
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        deck._remember_cell_pane("docs", "w1:p5", "w1:t3")
+        deck._remember_cell_pane("deckcell", "w1:p1", "w1:t1")   # never the deck's own tab
+        self.idle = {"w1:p3", "w1:p5", "w1:p1"}                   # w1:p6 (in docs' tab) runs something
+        ui = object.__new__(deck.Deck)
+        self.assertEqual(ui.leftover_tabs(), [("build", "w1:t2")])
+
+    def test_b_closing_asks_and_no_closes_nothing_yes_closes_and_forgets(self):
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.idle = {"w1:p3"}
+        ui = object.__new__(deck.Deck)
+        seen = {}
+        ui.note = lambda lines, title="result": seen.update(lines=lines)
+        asked = []
+        ui.choose = lambda title, items, cb: (asked.append((title, items)), cb(0))
+        ui.close_leftovers()
+        self.assertEqual(asked[0], ("close 1 leftover tab(s) of «build»? Each holds only an empty shell prompt", ["no", "yes, close them"]))
+        self.assertNotIn(["tab", "close", "w1:t2"], self.ran)
+        ui.choose = lambda title, items, cb: cb(1)
+        ui.close_leftovers()
+        self.assertIn(["tab", "close", "w1:t2"], self.ran)
+        self.assertNotIn("build", deck._cell_panes())
+        self.assertEqual(seen["lines"], ["closed 1 leftover tab(s): «build»"])
+
+    def test_b_a_tab_that_got_busy_meanwhile_is_not_closed(self):
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.idle = {"w1:p3"}
+        ui = object.__new__(deck.Deck)
+        ui.note = lambda lines, title="result": None
+
+        def choose(title, items, cb):
+            self.idle.clear()   # something started there before the yes
+            cb(1)
+        ui.choose = choose
+        ui.close_leftovers()
+        self.assertNotIn(["tab", "close", "w1:t2"], self.ran)
+
+
 class StaleMarker(unittest.TestCase):
     """Review: a marker left behind (herdr killed the deck's pane) must never make the deck type into another pane
     that later got the same id."""
