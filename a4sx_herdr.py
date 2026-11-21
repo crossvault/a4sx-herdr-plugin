@@ -430,10 +430,12 @@ def cell_folder(cwd, name):
         except OSError as e:
             raise PluginError(f"{shown} couldn't be made ({e.strerror or e}), so the cell wasn't started. Start it "
                               "from a pane in another folder.")
-    why = "your home folder" if here == home else "this folder" if here else "no folder was known"
-    return folder, (f"The cell starts in {shown}{' (made just now)' if made else ''}: a4sx doesn't run a cell in "
-                    f"{why}, which holds a4sx's state." if here else
-                    f"The cell starts in {shown}{' (made just now)' if made else ''}: no folder was known.")
+    head = f"The cell starts in {shown}{' (made just now)' if made else ''}: "
+    if not here:
+        return folder, head + "no folder was known."
+    if here == home:
+        return folder, head + "a4sx doesn't run a cell in your home folder, which holds a4sx's state."
+    return folder, head + "a4sx doesn't run a cell in a folder above your home folder (it holds a4sx's state)."
 
 
 def stop_command(exe, cell, cells):

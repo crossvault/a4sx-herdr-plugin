@@ -112,6 +112,16 @@ class Picker(unittest.TestCase):
         self.assertIn("isn't a plain folder", str(e.exception))
         self.assertFalse([c for c in self.herdr_calls if c[:2] == ["pane", "split"]])
 
+    def test_from_above_the_home_folder_it_says_so(self):
+        with mock.patch.dict(os.environ, {plugin.ENV_ORIGIN_CWD: os.path.dirname(self.home)}):
+            out = self.pick(["1"])
+        self.assertIn("a4sx doesn't run a cell in a folder above your home folder (it holds a4sx's state).", out)
+
+    def test_without_a_known_folder_too(self):
+        with mock.patch.dict(os.environ, {plugin.ENV_ORIGIN_CWD: ""}):
+            out = self.pick(["1"])
+        self.assertIn("The cell starts in ~/projects/cell01 (made just now): no folder was known.", out)
+
     # ---- item 2: stop it there, start it here --------------------------------------------------------------------
     def running(self):
         self.set_cells([{"name": "cell01", "mesh_id": "m-1", "mesh_name": "testmesh", "local": {"state": "running"}}])
