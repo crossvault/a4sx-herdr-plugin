@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 - 2026-11-21
+
+Follow-ups from cell01's Omarchy recheck (herdr 0.9.5, a4sx #2309):
+- **Leftover tabs.** After a herdr restart, the tabs the deck once started cells in can pile up as empty shells. In the host view (4), **L** lists the ones in which every pane shows a bare shell prompt (herdr's `pane process-info`) and its shell runs no job: no child process, so a vim suspended with Ctrl-Z or a `… &` keeps the tab open. It names their cells and asks. It closes them only after a yes, and only those still all bare prompts by then (`herdr tab close`). It says which stayed open, and which herdr didn't close. The deck's own tab is never closed.
+- Before the start line is typed into a cell's old pane, a half-typed line there is cleared with Ctrl-U (`herdr pane send-keys … ctrl+u`). That happens only when process-info shows the bare shell, because in less or vim the key means something else.
+- The pane reused is only ever the one the deck last started that cell in, never another idle pane of its folder; a test pins this.
+
 ## 0.4.1 - 2026-11-21
 
 From cell01's round trip with a real Claude Code (a4sx #2309):

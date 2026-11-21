@@ -163,6 +163,10 @@ def _cell_panes():
 def _remember_cell_pane(cell, pane, tab):
     got = _cell_panes()
     got[cell] = [pane, tab]
+    _save_cell_panes(got)
+
+
+def _save_cell_panes(got):
     try:
         os.makedirs(os.path.dirname(_cell_panes_path()), exist_ok=True)
         tmp = _cell_panes_path() + ".tmp"
@@ -196,18 +200,39 @@ def _leftover_pane(cell):
 IDLE_SHELLS = ("bash", "zsh", "fish", "sh")
 
 
+def _idle_shell_pid(pane):
+    """The shell's pid when the pane shows a bare shell prompt (see pane_is_idle_shell), else None."""
+    info = (jrun([HERDR, "pane", "process-info", "--pane", pane], 8).get("result") or {}).get("process_info")
+    if not isinstance(info, dict):
+        return None
+    sp, fg, procs = info.get("shell_pid"), info.get("foreground_process_group_id"), info.get("foreground_processes")
+    if not isinstance(sp, int) or isinstance(sp, bool) or fg != sp or not isinstance(procs, list) or len(procs) != 1:
+        return None
+    p = procs[0] if isinstance(procs[0], dict) else {}
+    return sp if p.get("pid") == sp and os.path.basename(str(p.get("name") or "")).lstrip("-") in IDLE_SHELLS else None
+
+
+def _shell_children(pid):
+    """The shell's child processes (Linux /proc), or None when that can't be read."""
+    try:
+        with open(f"/proc/{int(pid)}/task/{int(pid)}/children", encoding="ascii") as f:
+            return f.read().split()
+    except (OSError, ValueError):
+        return None
+
+
+def pane_is_empty_shell(pane):
+    """Review of #6: closable only when the shell shows a bare prompt AND has no child at all (a vim suspended with
+    Ctrl-Z, `npm run dev &`, an ssh tunnel are children). Unreadable counts as busy."""
+    sp = _idle_shell_pid(pane)
+    return sp is not None and _shell_children(sp) == []
+
+
 def pane_is_idle_shell(pane):
     """cell01 (herdr 0.9.5 `pane process-info --pane <id>`): True only when the pane shows a bare shell prompt: the
     foreground process group is the shell's own, it is the one foreground process, and it is a known shell. Anything
     else (a program in front, a nested shell, an unknown shape, an error) is False, and the deck asks instead."""
-    info = (jrun([HERDR, "pane", "process-info", "--pane", pane], 8).get("result") or {}).get("process_info")
-    if not isinstance(info, dict):
-        return False
-    sp, fg, procs = info.get("shell_pid"), info.get("foreground_process_group_id"), info.get("foreground_processes")
-    if not isinstance(sp, int) or isinstance(sp, bool) or fg != sp or not isinstance(procs, list) or len(procs) != 1:
-        return False
-    p = procs[0] if isinstance(procs[0], dict) else {}
-    return p.get("pid") == sp and os.path.basename(str(p.get("name") or "")).lstrip("-") in IDLE_SHELLS
+    return _idle_shell_pid(pane) is not None
 
 
 def new_tab(label, cwd, argv, cell=None, reuse=None):
@@ -243,6 +268,10 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
     old = _leftover_pane(cell) if (cell and reuse) else None
     if old and tuple(old) == tuple(reuse):
         pane, tab = old
+        # follow-up (c): a half-typed line would prefix the start line; ctrl+u clears it, sent only when herdr's
+        # process-info shows the bare shell (in less or vim the key means something else)
+        if pane_is_idle_shell(pane):
+            run([HERDR, "pane", "send-keys", pane, "ctrl+u"], 8)
         # the shell may be in another folder: cd first, in the same line
         if run([HERDR, "pane", "run", pane, "cd " + shlex.quote(cwd) + " && " + " ".join(shlex.quote(a) for a in argv)])[0] == 0:
             run([HERDR, "tab", "focus", tab])
@@ -919,6 +948,8 @@ class Deck:
             ops.append(("A", "start the agent host (serves VS Code)", lambda: self.note([new_tab("agent host", os.path.expanduser("~"), [*A4SX_ARGV, "agent-host"])])))
         else:   # a4sx #2326 (CLI 0.59.15): the same stop as Ctrl-C in its tab; an older a4sx says so in its own words
             ops.append(("S", "stop the agent host … (as Ctrl-C in its tab: VS Code is told first)", self.stop_host))
+        if IN_HERDR:
+            ops.append(("L", "close the cells' leftover tabs (bare shell prompts only) …", self.close_leftovers))
         ops.append(("V", "set up VS Code's Agents window", lambda: self.note([new_tab("VS Code setup", os.path.expanduser("~"), [*A4SX_ARGV, "agent-host", "setup-vscode"])])))
         ops.append(("D", "check a4sx's folders (doctor)", lambda: self.bg("doctor", lambda: lines_of(run([*A4SX_ARGV, "doctor"], 120))[-8:])))
         return ops
@@ -942,6 +973,56 @@ class Deck:
     def already_running(self, name, pane):
         return self.note([f"«{name}» is already running on this host" + (f", in pane {pane}: g goes there" if pane else "")
                           + "; nothing was started"], name)
+
+    def leftover_tabs(self):
+        """Follow-up (b): the tabs the deck once started cells in that now hold only bare shell prompts (each pane idle by
+        process-info) and aren't the deck's own: [(cell, tab)]."""
+        mine = deck_state()[1]
+        panes = (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes")
+        if not isinstance(panes, list):
+            return []
+        out = []
+        for cell, (pane, tab) in list(_cell_panes().items()):
+            if not tab or tab == mine:
+                continue
+            here = [p.get("pane_id") for p in panes if p.get("tab_id") == tab]
+            if here and pane in here and all(isinstance(x, str) and pane_is_empty_shell(x) for x in here):
+                out.append((cell, tab))
+        return out
+
+    def close_leftovers(self):
+        """Asks first, naming them; closes only tabs that are still all bare prompts at that moment."""
+        def work():
+            found = self.leftover_tabs()
+            if not found:
+                return self.note(["no leftover tabs: every tab of a cell holds something besides a bare shell prompt, or runs a job"],
+                                 "leftover tabs")
+
+            def go(i):
+                if i != 1:
+                    return
+                again = {t for _c, t in self.leftover_tabs()}
+                done, failed, busy = [], [], []
+                for c, t in found:
+                    if t not in again:
+                        busy.append(c)
+                    elif run([HERDR, "tab", "close", t], 8)[0] == 0:
+                        done.append(c)
+                    else:
+                        failed.append(c)
+                left = _cell_panes()
+                for c in done:
+                    left.pop(c, None)
+                _save_cell_panes(left)
+                lines = [f"closed {len(done)} leftover tab(s)" + (": " + ", ".join(f"«{c}»" for c in done) if done else "")]
+                if busy:
+                    lines.append("left open (something runs there now): " + ", ".join(f"«{c}»" for c in busy))
+                if failed:
+                    lines.append("herdr didn't close: " + ", ".join(f"«{c}»" for c in failed))
+                self.note(lines, "leftover tabs")
+            self.choose(f"close {len(found)} leftover tab(s) of " + ", ".join(f"«{c}»" for c, _t in found)
+                        + "? Each holds only an empty shell prompt, with no jobs running", ["no", "yes, close them"], go)
+        threading.Thread(target=work, daemon=True).start()
 
     def start_cell(self, name, argv, iid=None):
         """s / n: a new tab, or (review) the cell's leftover shell from before a herdr restart when the person says it is
