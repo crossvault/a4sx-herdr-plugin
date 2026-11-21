@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""a4sx plugin for herdr. Version 0.3.1.
+"""a4sx plugin for herdr. Version 0.3.2.
 
 One file, standard library only (a4sx itself needs Python 3.10 or newer, so
 Python is there). herdr runs it with the plugin directory as working
@@ -13,8 +13,13 @@ binds to a key; it offers the other three.
 
 The plugin is a thin launcher. Rules this file keeps:
 
-  * The only thing it reads from a4sx itself is `a4sx mesh cells --json`.
-    Peers are shown by a4sx's own `a4sx mesh peers`, in a pane.
+  * It reads from a4sx only `a4sx mesh cells --json` and
+    `a4sx mesh peers MESH --cell NAME --json` (0.3.2: the peers view shows
+    names, where each one is and its status; ids only on request).
+  * The one file it may write outside its own config is herdr's config.toml,
+    and only when the person answers yes in the menu: it then adds the key
+    for the menu (a backup first, `herdr config check` after, the backup back
+    if that fails).
   * It starts a cell only as `a4sx launch --cell NAME`, plus flags from the
     person's own config file. Only the flags in ALLOWED_FLAGS are passed on,
     so the file cannot pick another cell, cannot let a cell act without
@@ -117,8 +122,9 @@ def a4sx_path():
 def own_cells():
     """This machine's cells, from `a4sx mesh cells --json`.
 
-    Each cell is a JSON object; this file reads its `name`, `mesh_id`,
-    `mesh_name`, `needs_approval` and `default` (true for the default cell).
+    Each cell is a JSON object; this file reads its `name`, `instance_id`,
+    `mesh_id`, `mesh_name`, `needs_approval` and `default` (true for the
+    default cell).
     """
     exe = a4sx_path()
     try:
@@ -204,6 +210,82 @@ def origin_env():
     return env
 
 
+# ---------------------------------------------------------------- key for the menu
+
+MENU_ACTION = f"{PLUGIN_ID}.menu"
+MENU_KEY = "prefix+a"
+MENU_BINDING = (
+    "\n[[keys.command]]\n"
+    f'key = "{MENU_KEY}"\n'
+    'type = "plugin_action"\n'
+    f'command = "{MENU_ACTION}"\n'
+    'description = "a4sx menu"\n'
+)
+
+
+def herdr_config_path():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "herdr", "config.toml")
+
+
+def menu_key_bound():
+    """Whether herdr's config.toml binds a key to this plugin's menu (read only)."""
+    try:
+        with open(herdr_config_path(), encoding="utf-8") as f:
+            text = f.read(1 << 20)
+    except OSError:
+        return False
+    return re.search(r'command\s*=\s*"' + re.escape(MENU_ACTION) + '"', text) is not None
+
+
+def bind_menu_key():
+    """Add the menu's key to herdr's config.toml, only after a yes: a backup first, `herdr config check` after (the
+    backup goes back if it fails), then `herdr server reload-config`."""
+    path = herdr_config_path()
+    print(f"This adds a key for the a4sx menu to {path}:")
+    print(MENU_BINDING)
+    print(f"Then your herdr prefix key, then `{MENU_KEY.split('+', 1)[1]}`, opens this menu. If that key is taken,")
+    print("edit the line later; `herdr config check` names a clash.")
+    if ask("Add it now? [y/N] ").lower() not in ("y", "yes"):
+        return
+    backup = path + ".a4sx-backup"
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = f.read()
+    except FileNotFoundError:
+        old = None
+    except OSError as e:
+        raise PluginError(f"herdr's config can't be read ({e.__class__.__name__}); nothing was changed.")
+    try:
+        if old is not None:
+            with open(backup, "w", encoding="utf-8") as f:
+                f.write(old)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(MENU_BINDING)
+    except OSError as e:
+        raise PluginError(f"herdr's config can't be written ({e.__class__.__name__}); nothing was changed.")
+    try:
+        run_herdr(["config", "check"])
+    except PluginError as e:
+        try:   # put it back exactly as it was
+            if old is None:
+                os.unlink(path)
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(old)
+        except OSError:
+            pass
+        raise PluginError(f"herdr didn't accept the key, so the config is as it was:\n{e}")
+    try:
+        run_herdr(["server", "reload-config"])
+        print("\nDone: the key works now.")
+    except PluginError:
+        print("\nAdded. It works after `herdr server reload-config` (or the next herdr start).")
+    if old is not None:
+        print(f"The config as it was before is in {backup}.")
+
+
 # ---------------------------------------------------------------- start a cell
 
 
@@ -271,6 +353,17 @@ def load_launch_args(cell):
     return default + own
 
 
+def still_waiting(exe, cell):
+    """`needs_approval` is what a4sx noted when the cell was made, and an a4sx that predates the fix never clears it. The
+    mesh's own list says whether the cell is active now (its own row, `a4sx mesh peers --json`); when that can't be
+    read, the note stays."""
+    if not MESH_REF_RE.fullmatch(str(cell.get("mesh_id") or "")):
+        return True
+    peers = mesh_peers_json(exe, cell)
+    mine = [p for p in peers or [] if isinstance(p, dict) and p.get("instance_id") == cell.get("instance_id")]
+    return not (len(mine) == 1 and mine[0].get("state") == "active")
+
+
 def pane_cell_picker():
     print("a4sx: start a cell in a new pane\n")
     exe = a4sx_path()
@@ -288,7 +381,7 @@ def pane_cell_picker():
             print(f"   -  {name!r}: not a valid cell name, left out")
             continue
         notes = []
-        if cell.get("needs_approval"):
+        if cell.get("needs_approval") and still_waiting(exe, cell):
             notes.append("waits for approval in its mesh")
         if cell.get("default") is True:
             notes.append("default")
@@ -353,7 +446,61 @@ def pane_cell_picker():
 # ---------------------------------------------------------------- peers
 
 
+PEER_STATE = {"active": "active", "pending": "waits for approval", "reserved": "not started yet",
+              "revoked": "removed", "unknown": "seen by a running cell here"}
+
+
+def peer_lines(peers, me, here, details=False):
+    """The readable peers list, like VS Code's tree: name, where it is, status; ids only with `details`."""
+    rows = []
+    for p in peers if isinstance(peers, list) else []:
+        if not isinstance(p, dict):
+            continue
+        iid = str(p.get("instance_id") or "")
+        name = printable(p.get("name") or "", 48) or "(no name)"
+        if iid and iid == me:
+            where = "this cell"
+        elif iid in here:
+            where = "this machine"
+        elif p.get("own") is True:
+            where = "your other machine"
+        else:
+            where = "another person's"
+        state = PEER_STATE.get(str(p.get("state") or "unknown"), printable(p.get("state") or "", 24))
+        presence = p.get("presence")
+        if state == "active" and presence in ("online", "offline", "away"):
+            state = "online" if presence == "online" else presence
+        if p.get("access") == "blocked":
+            state += ", messages blocked"
+        rows.append((name, where, state, iid, printable(p.get("aid") or "", 64)))
+    rows.sort(key=lambda r: (r[1] != "this cell", r[1] != "this machine", r[0]))
+    if not rows:
+        return ["  (no sessions listed)"]
+    w1 = max(len(r[0]) for r in rows)
+    w2 = max(len(r[1]) for r in rows)
+    out = []
+    for name, where, state, iid, aid in rows:
+        out.append(f"  {name:<{w1}}  {where:<{w2}}  {state}")
+        if details:
+            out.append(f"  {'':<{w1}}  id {iid or '?'}" + (f", key {aid}" if aid else ""))
+    return out
+
+
+def mesh_peers_json(exe, cell):
+    """`a4sx mesh peers MESH --cell NAME --json` (a4sx 0.25.0 or newer), or None."""
+    try:
+        r = subprocess.run(
+            [exe, "mesh", "peers", str(cell["mesh_id"]), "--cell", str(cell["name"]), "--json", "--no-browser"],
+            capture_output=True, text=True, env=child_env(), stdin=subprocess.DEVNULL, timeout=45,
+        )
+        data = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    return data.get("peers") if isinstance(data, dict) else None
+
+
 def pane_peers():
+    details = False
     while True:
         clear()
         print("a4sx: mesh peers\n")
@@ -366,22 +513,31 @@ def pane_peers():
             print("None of this machine's cells is in a mesh.")
             return wait_close()
         exe = a4sx_path()
+        here = {str(c.get("instance_id") or "") for c in cells} - {""}
         for cell in in_mesh:
             mesh_label = printable(cell.get("mesh_name") or "") or cell["mesh_id"]
             print(f"Mesh {mesh_label}, seen from your cell {cell['name']}:\n")
             sys.stdout.flush()
-            try:
-                # a4sx's own table, straight to the pane. --no-browser: if the
-                # server wants a sign-in, a4sx prints the link and opens nothing.
-                subprocess.run(
-                    [exe, "mesh", "peers", str(cell["mesh_id"]), "--cell", str(cell["name"]), "--no-browser"],
-                    env=child_env(), stdin=subprocess.DEVNULL, timeout=45,
-                )
-            except subprocess.TimeoutExpired:
-                print("(no answer within 45 seconds)")
+            peers = mesh_peers_json(exe, cell)
+            if peers is not None:
+                print("\n".join(peer_lines(peers, str(cell.get("instance_id") or ""), here, details)))
+            else:
+                try:
+                    # an older a4sx (or no answer as JSON): its own table, straight to the pane. --no-browser: if
+                    # the server wants a sign-in, a4sx prints the link and opens nothing.
+                    subprocess.run(
+                        [exe, "mesh", "peers", str(cell["mesh_id"]), "--cell", str(cell["name"]), "--no-browser"],
+                        env=child_env(), stdin=subprocess.DEVNULL, timeout=45,
+                    )
+                except subprocess.TimeoutExpired:
+                    print("(no answer within 45 seconds)")
             print()
-        if ask("Enter refreshes, q closes: ").lower() in ("q", "quit", "exit"):
+        what = "hides the ids" if details else "shows ids and keys"
+        answer = ask(f"Enter refreshes, i {what}, q closes: ").lower()
+        if answer in ("q", "quit", "exit"):
             return
+        if answer == "i":
+            details = not details
 
 
 # ---------------------------------------------------------------- join a mesh
@@ -409,8 +565,17 @@ def pane_menu():
     print("a4sx\n")
     print("   1  Start a cell in a new pane")
     print("   2  Show mesh peers")
-    print("   3  Join a mesh (paste an invitation link)\n")
-    target = {"1": pane_cell_picker, "2": pane_peers, "3": pane_join}.get(ask("Number (Enter cancels): "))
+    print("   3  Join a mesh (paste an invitation link)")
+    bound = menu_key_bound()
+    if not bound:
+        print("   4  Open this menu with a key (adds it to herdr's config)")
+    print()
+    if not bound:
+        print("No key opens this menu yet: choose 4, or see the plugin's README.\n")
+    choices = {"1": pane_cell_picker, "2": pane_peers, "3": pane_join}
+    if not bound:
+        choices["4"] = bind_menu_key
+    target = choices.get(ask("Number (Enter cancels): "))
     if target:
         clear()
         target()

@@ -1,6 +1,6 @@
 id = "a4sx.mesh"
 name = "a4sx mesh"
-version = "0.3.1"
+version = "0.3.2"
 min_herdr_version = "0.9.1"
 description = "Start a4sx cells in panes, show mesh peers, join a mesh from an invitation"
 platforms = ["linux"]
