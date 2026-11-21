@@ -87,6 +87,9 @@ class StopHost(unittest.TestCase):
         p = mock.patch.object(deck, "jrun", lambda argv, timeout=30: dict(self._status) if argv[-3:] == ["agent-host", "status", "--json"] else {})
         p.start()
         self.addCleanup(p.stop)
+        q = mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (0, "usage", ""))   # never the real a4sx
+        q.start()
+        self.addCleanup(q.stop)
         return ui, {k: (label, fn) for k, label, fn in ui.host_ops()}
 
     def test_running_offers_stop_and_runs_the_clis_stop_in_the_background(self):
@@ -95,7 +98,7 @@ class StopHost(unittest.TestCase):
         self.assertNotIn("A", ops)
         seen = {}
         with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(title=title, lines=fn())), \
-                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: seen.update(argv=argv, t=timeout) or (0, "a4sx agent host: stopped (pid 4)\n", "")):
+                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (0, "usage", "") if argv[-1] == "--help" else seen.update(argv=argv, t=timeout) or (0, "a4sx agent host: stopped (pid 4)\n", "")):
             with mock.patch.object(deck.Deck, "choose", lambda self, title, items, cb: seen.update(asked=title, items=items) or cb(0)):
                 ops["S"][1]()   # asked first; "no" stops nothing
             self.assertNotIn("argv", seen)
@@ -112,7 +115,7 @@ class StopHost(unittest.TestCase):
         seen = {}
         with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(lines=fn())), \
                 mock.patch.object(deck.Deck, "choose", lambda self, title, items, cb: cb(1)), \
-                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (1, "", "TimeoutExpired: a4sx agent-host stop")):
+                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (0, "usage", "") if argv[-1] == "--help" else (1, "", "TimeoutExpired: a4sx agent-host stop")):
             ops["S"][1]()
         self.assertIn("may still stop", " ".join(seen["lines"]))
 
@@ -133,9 +136,22 @@ class StopHost(unittest.TestCase):
         seen = {}
         with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(lines=fn())), \
                 mock.patch.object(deck.Deck, "choose", lambda *a: self.fail("asked")), \
-                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: seen.update(argv=argv) or (0, "stopped\n", "")):
+                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (0, "usage", "") if argv[-1] == "--help" else seen.update(argv=argv) or (0, "stopped\n", "")):
             ops["S"][1]()
         self.assertEqual(seen["argv"][-2:], ["agent-host", "stop"])
+
+    def test_an_older_a4sx_is_told_to_update_and_nothing_is_asked_or_stopped(self):
+        ui, ops = self._ops(True)
+        ran, seen = [], {}
+        old = (2, "", "a4sx agent-host: error: argument agent_host_cmd: invalid choice: 'stop' (choose from 'setup-vscode', 'status')\n")
+        with mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: ran.append(argv[-2:]) or old), \
+                mock.patch.object(deck.Deck, "choose", lambda *a: self.fail("asked")), \
+                mock.patch.object(deck.Deck, "bg", lambda *a: self.fail("stopped")), \
+                mock.patch.object(deck.Deck, "note", lambda self_, lines, title="result": seen.update(lines=lines)):
+            ops["S"][1]()
+        self.assertEqual(ran, [["stop", "--help"]], "only the side-effect-free probe")
+        self.assertEqual(seen["lines"], [deck.STOP_NEEDS_UPDATE])
+        self.assertIn("needs a4sx 0.59.15 or newer", deck.STOP_NEEDS_UPDATE)
 
     def test_stopped_offers_start_not_stop(self):
         _ui, ops = self._ops(False)
