@@ -192,10 +192,28 @@ def _leftover_pane(cell):
     return pane, tab
 
 
+#: the shells whose bare prompt counts as idle (process-info's foreground process name)
+IDLE_SHELLS = ("bash", "zsh", "fish", "sh")
+
+
+def pane_is_idle_shell(pane):
+    """cell01 (herdr 0.9.5 `pane process-info --pane <id>`): True only when the pane shows a bare shell prompt: the
+    foreground process group is the shell's own, it is the one foreground process, and it is a known shell. Anything
+    else (a program in front, a nested shell, an unknown shape, an error) is False, and the deck asks instead."""
+    info = (jrun([HERDR, "pane", "process-info", "--pane", pane], 8).get("result") or {}).get("process_info")
+    if not isinstance(info, dict):
+        return False
+    sp, fg, procs = info.get("shell_pid"), info.get("foreground_process_group_id"), info.get("foreground_processes")
+    if not isinstance(sp, int) or isinstance(sp, bool) or fg != sp or not isinstance(procs, list) or len(procs) != 1:
+        return False
+    p = procs[0] if isinstance(procs[0], dict) else {}
+    return p.get("pid") == sp and os.path.basename(str(p.get("name") or "")).lstrip("-") in IDLE_SHELLS
+
+
 def new_tab(label, cwd, argv, cell=None, reuse=None):
     """A new herdr tab running argv. `cell`: a cell's start: its name must follow the CLI's rule, and its pane is
     remembered for the next time. `reuse`: (pane, tab) of the cell's leftover shell from before a herdr restart, which
-    the person confirmed is an empty shell (review: herdr can't tell an idle shell from vim or ssh in it); it is
+    herdr's process-info shows as a bare shell prompt, or the person said is one (pane_is_idle_shell can't tell); it is
     checked again, and a failed run there opens a new tab. Everything typed into a shell is shlex-quoted (POSIX:
     herdr's panes are on Linux)."""
     if cell is not None and not CELL_NAME_RE.fullmatch(str(cell)):
@@ -241,14 +259,44 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
     return f"opened the tab «{label}»: {shown}"
 
 
-def label_panes(rows):
+#: panes this deck has seen with a cell's name: {pane: cell}
+LABELED = {}
+#: the sources that put a cell's name on a pane: the deck's own and `a4sx launch`'s (HERDR_META_SOURCE in the CLI)
+LABEL_SOURCES = ("a4sx-deck", "a4sx-launch")
+
+
+def label_panes(rows, cells=(), clear=True):
+    """Each running cell's name on its pane; cell01: a pane whose cell left it (moved away, stopped) loses that name.
+    herdr 0.9.5 clears a label only for the source that set it, so both sources are cleared."""
+    now = {}
     for r in rows:
         if r.get("pane"):   # pane id first; a source id with a dot is read as an option by herdr 0.9.5
-            run([HERDR, "pane", "report-metadata", r["pane"], "--source", "a4sx-deck", "--display-agent", r["name"]], 8)
+            now[r["pane"]] = r["name"]
+            if LABELED.get(r["pane"]) != r["name"]:
+                run([HERDR, "pane", "report-metadata", r["pane"], "--source", "a4sx-deck", "--display-agent", r["name"]], 8)
+    # a cell that still runs but isn't in these rows (another mesh's) keeps its pane's name
+    running = {c.get("name") for c in cells if (c.get("local") or {}).get("state") == "running"}
+    shown = {r["name"] for r in rows}
+    for pane in [p for p in LABELED if p not in now]:
+        if not clear or (LABELED[pane] in running and LABELED[pane] not in shown):
+            now[pane] = LABELED[pane]
+            continue
+        for src in LABEL_SOURCES:
+            run([HERDR, "pane", "report-metadata", pane, "--source", src, "--clear-display-agent"], 8)
+    LABELED.clear()
+    LABELED.update(now)
 
 
 # ---------------------------------------------------------------- the deck as the first thing a herdr session shows
 DECK_TITLE = "a4sx deck"
+#: cell01: below this the boxes overlap; the deck then shows one plain line what to do
+DECK_MIN_W, DECK_MIN_H = 100, 20
+
+
+def narrow_screen(w, h):
+    """What a pane too small for the deck shows: the size it has and needs, and what to do (plain text, short lines)."""
+    return ["a4sx deck", "", f"this pane is {w}×{h};", f"the deck needs {DECK_MIN_W + 1}×{DECK_MIN_H}.", "",
+            "make the pane wider", "(or zoom it in herdr);", "q closes the deck"]
 
 
 def _marker():
@@ -316,19 +364,39 @@ def deck_pane_id():
     return pane if alive else None
 
 
-def on_start_mode():
-    """What herdr's start does: "focus" (the default: the deck is the first thing shown), "open" (a tab, not focused)
-    or "off". From DECK_ON_START, else the one word in the plugin's config folder, file `on-start`."""
-    v = os.environ.get("DECK_ON_START", "").strip().lower()
+def _setting(env, name):
+    """A deck setting: the environment variable `env`, else the one word in the file `name` of the plugin's config
+    folder ("" when neither)."""
+    v = os.environ.get(env, "").strip().lower()
     if not v:
         d = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or os.path.join(
             os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "herdr", "plugins", "config", PLUGIN_ID)
         try:
-            with open(os.path.join(d, "on-start"), encoding="utf-8") as f:
+            with open(os.path.join(d, name), encoding="utf-8") as f:
                 v = f.read().strip().lower()
         except OSError:
             v = ""
+    return v
+
+
+def on_start_mode():
+    """What herdr's start does: "focus" (the default: the deck is the first thing shown), "open" (a tab, not focused)
+    or "off". From DECK_ON_START, else the one word in the plugin's config folder, file `on-start`."""
+    v = _setting("DECK_ON_START", "on-start")
     return v if v in ("focus", "open", "off") else "focus"
+
+
+#: cell01 (#2309): how the deck uploads a conversation, a setting instead of a question each time. "as it is"
+#: (--no-scrub) is left out until a4sx #2292: the server scrubs every push today, so it wouldn't be as it is.
+UPLOAD_MODES = {"scrubbed": ("", "scrubbed (secrets, personal data, host names and paths removed)"),
+                "keep-names": ("--keep-pii", "names, hosts and paths kept on this computer (the server still redacts "
+                                             "them until a4sx #2292); secrets removed")}
+
+
+def upload_mode():
+    """The `upload` setting (DECK_UPLOAD, else the file `upload`): "scrubbed" (the default) or "keep-names"."""
+    v = _setting("DECK_UPLOAD", "upload")
+    return v if v in UPLOAD_MODES else "scrubbed"
 
 
 def open_deck(focus=True):
@@ -464,7 +532,9 @@ class Data:
     def _refresh(self, force):
         now = time.time()
         # ---- local: no request to the server
-        agents = ((jrun([HERDR, "agent", "list"]).get("result") or {}).get("agents") or []) if IN_HERDR else []
+        got_agents = jrun([HERDR, "agent", "list"]) if IN_HERDR else {}
+        agents_ok = isinstance(got_agents.get("result"), dict)   # review: a failed list must not clear every name
+        agents = (got_agents.get("result") or {}).get("agents") or [] if agents_ok else []
         ah = jrun([*A4SX_ARGV, "agent-host", "status", "--json"], 20)
         if ah or not self.ah["known"]:
             self.ah = {**ah, "running": bool(ah.get("running")), "address": ah.get("address") or "", "known": bool(ah),
@@ -543,7 +613,7 @@ class Data:
                                 "online" if (c.get("local") or {}).get("state") == "running" else "offline"))
         rows.sort(key=lambda r: (not r["here"], r["presence"] != "online", r["name"] or ""))
         if IN_HERDR and server_due:
-            label_panes(rows)
+            label_panes(rows, cells, clear=agents_ok)
         self.n += 1
         if ref and (force or now - self.t_act >= T_SERVER):   # local delivery records, no server request
             self.t_act = now
@@ -638,14 +708,20 @@ class Deck:
                     return max(mine, key=os.path.getmtime)
         return max(files, key=os.path.getmtime) if files else None
 
-    SCRUB = [("", "scrubbed: secrets, personal data, host names and paths are removed (a4sx's default)"),
-             ("--keep-pii", "keep names, hosts and paths; secrets are still removed"),
-             ("--no-scrub", "as it is: nothing is removed on this computer")]
+    def reload_library(self):
+        """One `a4sx list` in the background (skipped while the server says "slow down")."""
+        if LIMITED[0] > self.d.seen_limit or time.time() < getattr(self.d, "slow_until", 0):   # review: no call while slowed down
+            return
+
+        def work():
+            got = self.d.load_library()
+            if got is not None:
+                self.d.library = got
+        threading.Thread(target=work, daemon=True).start()
 
     def with_scrub(self, what, cb):
-        """Ask how the upload is to be treated, then run cb(flag)."""
-        self.choose(f"{what}: how should the conversation be uploaded?", [x[1] for x in self.SCRUB] + ["cancel"],
-                    lambda i: i < len(self.SCRUB) and cb(self.SCRUB[i][0]))
+        """cell01: no question; the `upload` setting (shown in the op's label and the result) gives the flag."""
+        return cb(UPLOAD_MODES[upload_mode()][0])
 
     def push(self, r, label, title, flag=""):
         """Save the cell's newest conversation under `label` (a new version when it exists). (ok, lines)"""
@@ -661,7 +737,8 @@ class Deck:
         cs = re.search(r"client scrub: ([a-z0-9 ]+)", txt)
         ss = re.search(r"server scrub: (\d+) redaction", txt)
         ok = res[0] == 0
-        return ok, ([f"saved {os.path.basename(f)[:8]}… as «{label}»" + (f" ({st.group(1)})" if st else "")
+        return ok, ([f"saved {os.path.basename(f)[:8]}… as «{label}», {UPLOAD_MODES[upload_mode()][1].split(' (')[0]} (setting `upload`)"
+                     + (f" ({st.group(1)})" if st else "")
                      + (f"; on this computer: {cs.group(1).strip()}" if cs else "")
                      + (f"; on the server: {ss.group(1)} redaction(s)" if ss else "")]
                     + ([f"{DIM}note: today the copy that comes back from the library is redacted in any case (names, home paths){RS}"]
@@ -678,15 +755,15 @@ class Deck:
                             f"prompt to {r['name']}", lambda: ["sent; its pane shows the answer (g)"] if run(
                                 [HERDR, "agent", "prompt", r["pane"], t])[0] == 0 else ["herdr could not send it"])))]
             if r["running"]:
-                ops += [("b", "back up its conversation …", lambda: self.with_scrub(f"backup of {r['name']}", lambda fl: self.bg(
+                ops += [("b", f"back up its conversation ({UPLOAD_MODES[upload_mode()][1].split(' (')[0]}; setting `upload`)", lambda: self.with_scrub(f"backup of {r['name']}", lambda fl: self.bg(
                             f"backup of {r['name']}", lambda: self.push(r, f"{r['name']}-backup", f"{r['name']}: backups from the deck", fl)[1]))),
                         ("x", "stop it here", lambda: self.choose(f"stop {r['name']} on this host?", ["no", "yes, stop it"],
                          lambda i: i == 1 and self.bg(f"stop {r['name']}", lambda: lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]])))))]
                 if not r["pane"] and IN_HERDR:
                     ops += [("i", "move it into herdr (it runs outside)", lambda: self.move_here(r))]
             else:
-                ops += [("s", "start it here, same conversation", lambda: self.start_cell(r["name"], [*A4SX_ARGV, "launch", "--cell", r["name"]])),
-                        ("n", "start it with a new conversation", lambda: self.start_cell(r["name"], [*A4SX_ARGV, "launch", "--cell", r["name"], "--new-session"]))]
+                ops += [("s", "start it here, same conversation", lambda: self.start_cell(r["name"], [*A4SX_ARGV, "launch", "--cell", r["name"]], r.get("iid"))),
+                        ("n", "start it with a new conversation", lambda: self.start_cell(r["name"], [*A4SX_ARGV, "launch", "--cell", r["name"], "--new-session"], r.get("iid")))]
             ops += [("r", "restore from a saved state …", lambda: self.restore(r)),
                     ("f", "launch profile (model route) …", lambda: self.set_profile(r)),
                     ("l", "Claude sign-in of this host: on/off …", lambda: self.choose(
@@ -734,6 +811,11 @@ class Deck:
 
     def start_seeded(self, r, saved):
         def work():
+            if not r["running"]:   # cell01: it may have started since the last refresh (herdr restores cells)
+                now = self.running_now(r["name"], r.get("iid"))
+                if now is not None:
+                    return [f"«{r['name']}» is already running on this host" + (f", in pane {now}: g goes there" if now else "")
+                            + "; nothing was started"]
             res = []
             if r["running"]:
                 res += lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
@@ -746,6 +828,12 @@ class Deck:
         if not here:
             return self.note(["no cell is stored on this host: redeem a cell code first (a4sx launch --cell -)"])
         want = saved[len("handoff-"):] if saved.startswith("handoff-") else ""
+        named = [r for r in here if r["name"] == want]
+        if named and not named[0]["running"]:   # cell01: a hand-off named after a stopped cell here goes to it, no question
+            return self.start_seeded(named[0], saved)
+        if named:   # review: a running one is stopped first, so that is asked (as x and S ask)
+            return self.choose(f"«{want}» runs here: stop it and start it from «{saved}»?", ["no", "yes, stop it and continue"],
+                               lambda i: i == 1 and self.start_seeded(named[0], saved))
         here.sort(key=lambda r: r["name"] != want)
         self.choose(f"which cell of this host continues «{saved}»?",
                     [r["name"] + (f"  {DIM}running: it is stopped first{RS}" if r["running"] else "") for r in here],
@@ -835,12 +923,54 @@ class Deck:
         ops.append(("D", "check a4sx's folders (doctor)", lambda: self.bg("doctor", lambda: lines_of(run([*A4SX_ARGV, "doctor"], 120))[-8:])))
         return ops
 
-    def start_cell(self, name, argv):
+    def running_now(self, name, iid=None):
+        """cell01: the cell's local state read now (the deck's rows can be seconds old, e.g. herdr restored the cell
+        meanwhile): None when it isn't running here (or it can't be read now), else the herdr pane its agent runs in
+        ("" when unknown). Review: by its instance id when known (the same name in two meshes); not while the server
+        says "slow down" (`mesh cells --json` asks it too): the CLI refuses a second start in any case."""
+        d = getattr(self, "d", None)
+        if d is not None and (LIMITED[0] > getattr(d, "seen_limit", 0) or time.time() < getattr(d, "slow_until", 0)):
+            return None
+        got = jrun([*A4SX_ARGV, "mesh", "cells", "--json"], 15)
+        if not any((c.get("instance_id") == iid if iid else c.get("name") == name)
+                   and (c.get("local") or {}).get("state") == "running" for c in got.get("cells") or []):
+            return None
+        agents = ((jrun([HERDR, "agent", "list"], 8).get("result") or {}).get("agents") or []) if IN_HERDR else []
+        a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+        return (a or {}).get("pane_id") or ""
+
+    def already_running(self, name, pane):
+        return self.note([f"«{name}» is already running on this host" + (f", in pane {pane}: g goes there" if pane else "")
+                          + "; nothing was started"], name)
+
+    def start_cell(self, name, argv, iid=None):
         """s / n: a new tab, or (review) the cell's leftover shell from before a herdr restart when the person says it is
-        an empty shell: herdr knows whether an agent runs there, not whether vim or ssh does."""
+        an empty shell: herdr knows whether an agent runs there, not whether vim or ssh does. cell01: never a second
+        start of a cell that runs already. Review: the check runs in the background, never in the key handler."""
+        pending = self.__dict__.setdefault("starting", set())
+        if name in pending:   # review: a second press while the first is checked opens no second tab
+            return
+        pending.add(name)
+        self.msg = f"{name}: checking whether it runs here …"
+
+        def work():
+            try:
+                now = self.running_now(name, iid)
+                if now is not None:
+                    return self.already_running(name, now)
+                self._start_cell(name, argv)
+            finally:
+                pending.discard(name)
+                if self.msg.startswith(f"{name}: checking"):
+                    self.msg = ""
+        threading.Thread(target=work, daemon=True).start()
+
+    def _start_cell(self, name, argv):
         old = _leftover_pane(name) if CELL_NAME_RE.fullmatch(str(name)) else None
         if not old:
             return self.note([new_tab(name, self.pdir(name), argv, cell=name)])
+        if pane_is_idle_shell(old[0]):   # cell01: herdr shows a bare shell prompt there: no question
+            return self.note([new_tab(name, self.pdir(name), argv, cell=name, reuse=old)])
         self.choose(f"«{name}» has its tab from before herdr restarted. Is its pane an empty shell prompt (no vim, ssh, "
                     "…)? The start command is typed into it", ["no, open a new tab", "yes, start it in that pane"],
                     lambda i: self.note([new_tab(name, self.pdir(name), argv, cell=name, reuse=old if i == 1 else None)]))
@@ -896,7 +1026,12 @@ class Deck:
 
     def draw(self):
         W, H = shutil.get_terminal_size((160, 48))
-        W = max(100, W - 1)
+        W -= 1
+        self.narrow = W < DECK_MIN_W or H < DECK_MIN_H
+        if self.narrow:   # cell01: a narrow pane broke the layout; say so instead
+            sys.stdout.write("\033[H" + "\n".join(x[:max(W, 1)] + "\033[K" for x in narrow_screen(W + 1, H)[: max(H - 1, 1)]) + "\033[J")
+            sys.stdout.flush()
+            return
         d, tick = self.d, int(time.time() * 8)
         with d.lock:
             rows, members, mine, lib, reqs = list(d.rows), list(d.members), dict(d.mine), list(d.library), list(d.requests)
@@ -1059,6 +1194,8 @@ class Deck:
 
     # ------------------------------------------------------------ keys
     def key(self, k):
+        if getattr(self, "narrow", False):   # review: unseen operations never run; only closing works there (q, as it says)
+            return k not in ("q", "\x03")
         if self.mode == "input":
             if k == "esc":
                 self.mode = "browse"
@@ -1086,7 +1223,9 @@ class Deck:
         if k in ("q", "\x03"):
             return False
         if k in ("1", "2", "3", "4", "5"):
-            self.view = VIEWS[int(k) - 1]
+            was, self.view = self.view, VIEWS[int(k) - 1]
+            if self.view == "move" and was != "move":   # cell01: the library as it is now, one call when it opens
+                self.reload_library()
         elif k in ("up", "k"):
             self.sel[self.view] = max(0, min(self.sel[self.view], n - 1) - 1)
         elif k in ("down", "j"):
