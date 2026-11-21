@@ -250,7 +250,7 @@ class LeftoverShell(unittest.TestCase):
             self.ran.clear()
             deck._remember_cell_pane("build", "w1:p3", "w1:t2")   # a new tab is remembered in its place
             ui.choose = lambda title, items, cb: (seen.update(asked=title, items=items), cb(answer))
-            ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+            ui._start_cell("build", ["a4sx", "launch", "--cell", "build"])
             self.assertEqual(seen["items"], ["no, open a new tab", "yes, start it in that pane"])
             self.assertIn("Is its pane an empty shell prompt", seen["asked"])
             self.assertEqual("w1:p3" in [r[2] for r in self.ran if r[:2] == ["pane", "run"]], used)
@@ -261,7 +261,7 @@ class LeftoverShell(unittest.TestCase):
         ui.choose = lambda *a: self.fail("asked")
         seen = {}
         ui.note = lambda lines, title="result": seen.update(lines=lines)
-        ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+        ui._start_cell("build", ["a4sx", "launch", "--cell", "build"])
         self.assertIn("opened the tab «build»", seen["lines"][0])
 
     def test_a_failed_run_in_the_old_pane_opens_a_new_tab(self):
@@ -384,6 +384,9 @@ class Cell01Omarchy(unittest.TestCase):
         r = mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("started"))
         r.start()
         self.addCleanup(r.stop)
+        th = mock.patch.object(deck.threading, "Thread", lambda target, daemon: types.SimpleNamespace(start=target))
+        th.start()
+        self.addCleanup(th.stop)
         return ui, seen
 
     def test_s_and_n_on_a_cell_that_runs_now_say_so_and_start_nothing(self):
@@ -394,7 +397,7 @@ class Cell01Omarchy(unittest.TestCase):
 
     def test_a_saved_session_start_on_a_cell_that_runs_now_starts_nothing(self):
         ui, seen = self._ui([{"name": "build", "local": {"state": "running"}}])
-        ui.bg = lambda *a: self.fail("started")
+        ui.bg = lambda title, fn: seen.update(lines=fn())   # the check runs in the background work
         ui.start_seeded({"name": "build", "running": False}, "handoff-build")
         self.assertEqual(seen["lines"], ["«build» is already running on this host; nothing was started"])
 
@@ -403,6 +406,22 @@ class Cell01Omarchy(unittest.TestCase):
         with mock.patch.object(deck, "new_tab", lambda *a, **k: "opened"), mock.patch.object(deck, "_leftover_pane", lambda c: None):
             ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
         self.assertEqual(seen["lines"], ["opened"])
+
+    def test_by_instance_id_when_known_and_not_while_slowed_down(self):
+        ui, seen = self._ui([{"name": "build", "instance_id": "ins_OTHER", "local": {"state": "running"}}])
+        self.assertIsNone(ui.running_now("build", "ins_MINE"), "another mesh's «build» runs, not this one")
+        self.assertEqual(ui.running_now("build", "ins_OTHER"), "")
+        ui.d = types.SimpleNamespace(seen_limit=0, slow_until=time.time() + 60)
+        self.assertIsNone(ui.running_now("build", "ins_OTHER"), "no server call while slowed down")
+
+    def test_in_a_narrow_pane_only_closing_works(self):
+        ui = object.__new__(deck.Deck)
+        ui.narrow = True
+        ui.mode = "browse"
+        for k in ("b", "s", "x", "S", "enter", "1"):
+            self.assertTrue(ui.key(k), k)   # nothing runs, the deck stays
+        self.assertFalse(ui.key("q"))
+        self.assertFalse(ui.key("\x03"))
 
     def test_a_narrow_pane_shows_what_to_do_not_a_broken_layout(self):
         ui = object.__new__(deck.Deck)
@@ -415,6 +434,39 @@ class Cell01Omarchy(unittest.TestCase):
         self.assertIn("make the pane wider", text)
         lines = [ln.replace("\033[K", "") for ln in "".join(out).replace("\033[H", "").replace("\033[J", "").split("\n")]
         self.assertTrue(all(len(ln) <= 51 for ln in lines), lines)
+
+
+class StaleLabel(unittest.TestCase):
+    """cell01: a pane where a cell used to run kept its name after the cell moved away. herdr 0.9.5 clears a label
+    with --clear-display-agent for the source that set it (tested by cell01 on Omarchy)."""
+
+    def setUp(self):
+        deck.LABELED.clear()
+        self.addCleanup(deck.LABELED.clear)
+        self.ran = []
+        p = mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: self.ran.append(argv[1:]) or (0, "", ""))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_a_pane_whose_cell_left_loses_the_name_of_both_sources(self):
+        deck.label_panes([{"name": "build", "pane": "w1:p4"}])
+        self.assertEqual(self.ran, [["pane", "report-metadata", "w1:p4", "--source", "a4sx-deck", "--display-agent", "build"]])
+        self.ran.clear()
+        deck.label_panes([{"name": "build", "pane": "w1:p4"}])
+        self.assertEqual(self.ran, [], "set once, not at every refresh")
+        deck.label_panes([{"name": "build", "pane": None}], [{"name": "build", "local": {"state": "stored"}}])
+        self.assertEqual(self.ran, [["pane", "report-metadata", "w1:p4", "--source", "a4sx-deck", "--clear-display-agent"],
+                                    ["pane", "report-metadata", "w1:p4", "--source", "a4sx-launch", "--clear-display-agent"]])
+        self.ran.clear()
+        deck.label_panes([])
+        self.assertEqual(self.ran, [], "cleared once")
+
+    def test_a_cell_of_another_mesh_that_still_runs_keeps_its_name(self):
+        deck.label_panes([{"name": "docs", "pane": "w1:p5"}])
+        self.ran.clear()
+        deck.label_panes([{"name": "build", "pane": None}], [{"name": "docs", "local": {"state": "running"}}])
+        self.assertEqual(self.ran, [])
+        self.assertEqual(deck.LABELED, {"w1:p5": "docs"})
 
 
 class StaleMarker(unittest.TestCase):
