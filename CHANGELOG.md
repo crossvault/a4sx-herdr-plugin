@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 - 2026-11-21
+
+- **The deck** (a4sx issue #2290). One pane shows the mesh, its cells, your a4sx library, the mesh's rules, this host and moving a cell (keys 1 to 5), with the selected row's operations on the right, each one key. Short commands run in place; anything you answer, or that opens the browser, runs in a new herdr tab. Everything it runs is an ordinary `a4sx` or `herdr` command; the deck stores only the id of its own pane.
+- The deck is the first thing a herdr session shows. Set `on-start` to `focus` (the default), `open` (a tab, not in front) or `off` (only the cells' names go into the agents list), with `DECK_ON_START` or one word in the file `on-start` in this plugin's config folder. After a herdr restart it starts again in its restored pane.
+- It reads locally every 5 seconds and asks the server at most once a minute (some things every 5 minutes), and waits longer each time the server says "slow down". It never reads or shows a key or a sign-in.
+- New actions: `deck` (open the deck) and `deck-label` (the cells' names in the agents list).
+
 ## 0.3.3 - 2026-11-21
 
 From the owner's live walkthrough on Omarchy (herdr 0.9.5, a4sx issue #2289):
