@@ -71,6 +71,8 @@ STOP_NEEDS_UPDATE = ("this a4sx can't stop the agent host from here (that needs 
                      "or stop it with Ctrl-C in its tab; nothing was stopped")
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+#: the a4sx CLI's own cell-name rule (MESH_CELL_NAME_RE): what may be typed into a shell as a cell's name
+CELL_NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?")
 
 
 def vlen(s):
@@ -192,7 +194,10 @@ def _leftover_pane(cell):
 
 def new_tab(label, cwd, argv, cell=None):
     """A new herdr tab running argv. `cell`: a cell's start; its leftover shell from before a herdr restart is used
-    instead of a new tab (cell01), and the pane is remembered for the next time."""
+    instead of a new tab (cell01), and the pane is remembered for the next time. Everything typed into a shell is
+    shlex-quoted (POSIX: herdr's panes are on Linux); a cell name outside the CLI's rule starts nothing."""
+    if cell is not None and not CELL_NAME_RE.fullmatch(str(cell)):
+        return f"«{ANSI.sub('', str(cell))[:64]}» isn't a cell name a4sx takes, so nothing was started"
     os.makedirs(cwd, exist_ok=True)
     shown = ("a4sx " + " ".join(argv[len(A4SX_ARGV):])) if argv[:len(A4SX_ARGV)] == A4SX_ARGV else " ".join(argv)
     if not IN_HERDR:

@@ -205,6 +205,26 @@ class LeftoverShell(unittest.TestCase):
             deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build")
             self.assertNotIn("w1:p3", [r[2] for r in self.ran if r[:2] == ["pane", "run"]], pane)
 
+    def test_a_hostile_folder_never_runs_as_a_command(self):
+        import shlex
+        deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+        self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
+        odd = os.path.join(self.cwd, "my dir; touch PWNED $(id) `id` 'q' \"d\" &&x")
+        deck.new_tab("build", odd, ["a4sx", "launch", "--cell", "build"], cell="build")
+        line = self.ran[0][3]
+        words = shlex.split(line)   # how a POSIX shell splits it: the folder is one word, nothing else runs
+        self.assertEqual(words, ["cd", odd, "&&", "a4sx", "launch", "--cell", "build"])
+        self.assertTrue(line.startswith("cd '"), line)
+
+    def test_a_name_outside_the_clis_rule_starts_nothing(self):
+        for bad in ("x; rm -rf ~", "$(id)", "`id`", "Build", "a b", "-x", "", "a" * 49, "név"):
+            self.ran.clear()
+            deck._remember_cell_pane("build", "w1:p3", "w1:t2")
+            out = deck.new_tab(bad, self.cwd, ["a4sx", "launch", "--cell", bad], cell=bad)
+            self.assertIn("isn't a cell name a4sx takes, so nothing was started", out)
+            self.assertEqual(self.ran, [], bad)
+        self.assertIsNotNone(deck.CELL_NAME_RE.fullmatch("omarchy-vm"))
+
     def test_another_cells_pane_is_not_this_ones(self):
         deck._remember_cell_pane("docs", "w1:p3", "w1:t2")
         self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
