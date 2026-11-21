@@ -92,10 +92,24 @@ class StopHost(unittest.TestCase):
         seen = {}
         with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(title=title, lines=fn())), \
                 mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: seen.update(argv=argv, t=timeout) or (0, "a4sx agent host: stopped (pid 4)\n", "")):
-            ops["S"][1]()
+            with mock.patch.object(deck.Deck, "choose", lambda self, title, items, cb: seen.update(asked=title, items=items) or cb(0)):
+                ops["S"][1]()   # asked first; "no" stops nothing
+            self.assertNotIn("argv", seen)
+            self.assertEqual(seen["items"], ["no", "yes, stop it"])
+            with mock.patch.object(deck.Deck, "choose", lambda self, title, items, cb: cb(1)):
+                ops["S"][1]()
         self.assertEqual(seen["argv"][-2:], ["agent-host", "stop"])
         self.assertGreaterEqual(seen["t"], 35, "longer than the CLI's own 30 s wait")
         self.assertEqual(seen["lines"], ["a4sx agent host: stopped (pid 4)"])
+
+    def test_a_stop_that_timed_out_says_the_host_may_still_stop(self):
+        ui, ops = self._ops(True)
+        seen = {}
+        with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(lines=fn())), \
+                mock.patch.object(deck.Deck, "choose", lambda self, title, items, cb: cb(1)), \
+                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: (1, "", "TimeoutExpired: a4sx agent-host stop")):
+            ops["S"][1]()
+        self.assertIn("may still stop", " ".join(seen["lines"]))
 
     def test_stopped_offers_start_not_stop(self):
         _ui, ops = self._ops(False)

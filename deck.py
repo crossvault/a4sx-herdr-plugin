@@ -750,11 +750,25 @@ class Deck:
         if not ah["running"]:
             ops.append(("A", "start the agent host (serves VS Code)", lambda: self.note([new_tab("agent host", os.path.expanduser("~"), [*A4SX_ARGV, "agent-host"])])))
         else:   # a4sx #2326 (CLI 0.59.15): the same stop as Ctrl-C in its tab; an older a4sx says so in its own words
-            ops.append(("S", "stop the agent host (as Ctrl-C in its tab: VS Code is told first)",
-                        lambda: self.bg("stop the agent host", lambda: lines_of(run([*A4SX_ARGV, "agent-host", "stop"], 45))[-4:])))
+            ops.append(("S", "stop the agent host … (as Ctrl-C in its tab: VS Code is told first)", self.stop_host))
         ops.append(("V", "set up VS Code's Agents window", lambda: self.note([new_tab("VS Code setup", os.path.expanduser("~"), [*A4SX_ARGV, "agent-host", "setup-vscode"])])))
         ops.append(("D", "check a4sx's folders (doctor)", lambda: self.bg("doctor", lambda: lines_of(run([*A4SX_ARGV, "doctor"], 120))[-8:])))
         return ops
+
+    def stop_host(self):
+        """Review: it ends every cell the host started, so it asks first (as x does for one cell)."""
+        def go(i):
+            if i != 1:
+                return
+            def work():
+                rc, out, err = run([*A4SX_ARGV, "agent-host", "stop"], 45)
+                lines = lines_of((rc, out, err))[-4:]
+                if rc and err.startswith("TimeoutExpired"):   # the deck's own timeout (run says so): the host has the request
+                    lines = ["no answer within 45 s: the agent host has the request and may still stop;",
+                             "this view shows when it has, and Ctrl-C in its tab stops it at once"]
+                return lines
+            self.bg("stop the agent host", work)
+        self.choose("stop the agent host? Every cell it started ends (VS Code is told first)", ["no", "yes, stop it"], go)
 
     def bring(self, name, with_handoff):
         """Start a cell that is stored on another computer here: with the person's sign-in the server moves it."""

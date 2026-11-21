@@ -8,7 +8,7 @@
 - **herdr 0.9.5 or newer** is needed now (the deck's start hook). On herdr 0.9.1, keep plugin 0.3.3.
 - If you installed cell01's standalone `a4sx.deck` plugin, uninstall it: both would open a deck at start. The `on-start` file now lives in the `a4sx.mesh` config folder. It never reads or shows a key or a sign-in.
 - New actions: `deck` (open the deck) and `deck-label` (the cells' names in the agents list).
-- This host (view 4): while the agent host runs, **S** stops it with `a4sx agent-host stop`, the same stop as Ctrl-C in its tab (VS Code is told first, then the cells it started end). This needs a4sx CLI 0.59.15 or newer; an older a4sx says it doesn't know the command, and Ctrl-C in the host's tab still works.
+- This host (view 4): while the agent host runs, **S** asks, then stops it with `a4sx agent-host stop`, the same stop as Ctrl-C in its tab (VS Code is told first, then the cells it started end). This needs a4sx CLI 0.59.15 or newer; an older a4sx says it doesn't know the command, and Ctrl-C in the host's tab still works.
 - Moving a cell (view 5): **bring here** starts one of your cells that runs elsewhere on this host, signed in; **Start from a saved session** starts a cell here seeded from a saved conversation. There is no hand-off yet: the conversation follows a moved cell once a4sx #2292 lands (an exact copy; a scrubbed one would change its peers' names).
 
 ## 0.3.3 - 2026-11-21
