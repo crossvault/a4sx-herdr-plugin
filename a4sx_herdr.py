@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""a4sx plugin for herdr. Version 0.3.2.
+"""a4sx plugin for herdr. Version 0.3.3.
 
 One file, standard library only (a4sx itself needs Python 3.10 or newer, so
 Python is there). herdr runs it with the plugin directory as working
@@ -70,6 +70,10 @@ SCRUB_ENV = ("HERDR_PLUGIN_CLICKED_URL", "HERDR_PLUGIN_CONTEXT_JSON", "HERDR_PLU
 
 ENV_ORIGIN_PANE = "A4SX_HERDR_ORIGIN_PANE"
 ENV_ORIGIN_CWD = "A4SX_HERDR_ORIGIN_CWD"
+
+# 0.3.3 (#2289): a4sx refuses to run a cell in your home folder (it holds a4sx's state), so a pick from there
+# starts the cell in its own folder below this one, made if missing
+PROJECTS_DIR = "projects"
 
 
 class PluginError(Exception):
@@ -406,6 +410,65 @@ def still_waiting(exe, cell):
     return not (len(mine) == 1 and mine[0].get("state") == "active")
 
 
+def cell_folder(cwd, name):
+    """(folder, note): where the cell starts. The folder the person was in, unless that is the home folder or one
+    above it (a4sx refuses those: the home folder holds a4sx's state), or unknown: then ~/projects/NAME, made if
+    missing. `note` says which and why (None when it is the folder they were in)."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    here = os.path.realpath(cwd) if cwd else ""
+    if here and here != home and not home.startswith(here.rstrip(os.sep) + os.sep):
+        return cwd, None
+    folder = os.path.join(home, PROJECTS_DIR, name)
+    shown = os.path.join("~", PROJECTS_DIR, name)
+    if os.path.islink(folder) or (os.path.lexists(folder) and not os.path.isdir(folder)):
+        raise PluginError(f"{shown} is there but isn't a plain folder, so the cell wasn't started. Move it away, or "
+                          "start the cell from a pane in another folder.")
+    made = not os.path.isdir(folder)
+    if made:
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as e:
+            raise PluginError(f"{shown} couldn't be made ({e.strerror or e}), so the cell wasn't started. Start it "
+                              "from a pane in another folder.")
+    why = "your home folder" if here == home else "this folder" if here else "no folder was known"
+    return folder, (f"The cell starts in {shown}{' (made just now)' if made else ''}: a4sx doesn't run a cell in "
+                    f"{why}, which holds a4sx's state." if here else
+                    f"The cell starts in {shown}{' (made just now)' if made else ''}: no folder was known.")
+
+
+def stop_command(exe, cell, cells):
+    """`a4sx mesh cell stop NAME`, with --mesh when another cell here has the same name."""
+    name = str(cell["name"])
+    same = [c for c in cells if c.get("name") == name]
+    mesh = str(cell.get("mesh_id") or "")
+    return [exe, "mesh", "cell", "stop", name] + (["--mesh", mesh] if len(same) > 1 and MESH_REF_RE.fullmatch(mesh)
+                                                  else [])
+
+
+def stop_it_there(exe, cell, cells):
+    """0.3.3 (#2289): the cell runs here already (VS Code, another pane): ask, then `a4sx mesh cell stop`. True when
+    it was stopped; a4sx's own output is shown either way."""
+    name = str(cell["name"])
+    print(f"\n«{name}» already runs on this machine (in VS Code or another pane). A second start would be refused.")
+    if ask("Stop it there and start it here? [y/N] ").lower() not in ("y", "yes"):
+        print("Nothing was stopped or started.")
+        return False
+    argv = stop_command(exe, cell, cells)
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, env=child_env(), stdin=subprocess.DEVNULL,
+                           timeout=90)
+    except subprocess.TimeoutExpired:
+        print(f"`{shlex.join(argv[1:])}` didn't finish within 90 seconds, so nothing was started here.")
+        return False
+    out = redact_text((r.stdout + r.stderr).strip())[:800]
+    if out:
+        print(out)
+    if r.returncode != 0:
+        print(f"«{name}» wasn't stopped, so nothing was started here.")
+        return False
+    return True
+
+
 def pane_cell_picker():
     print("a4sx: start a cell in a new pane\n")
     exe = a4sx_path()
@@ -424,7 +487,7 @@ def pane_cell_picker():
             continue
         notes = []
         if running_here(exe, cell):
-            notes.append("running here")
+            notes.append("running here: pick it to stop it there and start it here")
         if cell.get("needs_approval") and still_waiting(exe, cell):
             notes.append("waits for approval in its mesh")
         if cell.get("default") is True:
@@ -437,7 +500,7 @@ def pane_cell_picker():
             notes.append("problem in launch-args.json")
         elif cell.get("mesh_id") and ISOLATION_FLAG not in flags:
             flag_missing = True
-        usable.append(name)
+        usable.append(cell)
         mesh = printable(cell.get("mesh_name") or "") or "no mesh"
         note = f"  ({', '.join(notes)})" if notes else ""
         flag_text = f"   flags: {shlex.join(flags)}" if flags else ""
@@ -457,12 +520,15 @@ def pane_cell_picker():
             f'  {{"default": ["{ISOLATION_FLAG}"]}}'
         )
     print()
-    if cwd:
-        print(f"The cell starts in: {cwd}")
     choice = ask("Number of the cell to start (Enter cancels): ")
     if not choice.isdigit() or not 1 <= int(choice) <= len(usable):
         return
-    name = usable[int(choice) - 1]
+    cell = usable[int(choice) - 1]
+    name = str(cell["name"])
+    if running_here(exe, cell) and not stop_it_there(exe, cell, cells):
+        return wait_close()
+    cwd, note = cell_folder(cwd, name)
+    print(note or f"The cell starts in: {cwd}")
     # The full path: the same a4sx that listed the cells, whatever the PATH of
     # the new pane's shell says.
     command = shlex.join([exe, "launch", "--cell", name, *load_launch_args(name)])

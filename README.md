@@ -53,7 +53,7 @@ If you linked a clone, run `herdr plugin link` on the folder again after you upd
 
 | Choice | What happens |
 |---|---|
-| **1 Start a cell** | Lists the cells on this machine. You type a number. The plugin splits the pane you were in and types `a4sx launch --cell NAME` there, in the same folder. |
+| **1 Start a cell** | Lists the cells on this machine. You type a number. The plugin splits the pane you were in and types `a4sx launch --cell NAME` there, in the same folder. From your home folder (which a4sx refuses: it holds a4sx's state) the cell starts in `~/projects/NAME`, made if missing, and the picker says so. A cell that already runs on this machine (in VS Code or another pane) is marked; pick it, answer yes, and the plugin runs `a4sx mesh cell stop NAME` first, then starts it here. |
 | **2 Mesh peers** | For each of your cells in a mesh: every session by name, where it is (this cell, this machine, your other machine, another account's) and its status (online, offline, waits for approval, …). `i` then Enter shows the ids and keys, Enter refreshes, `q` then Enter closes. An a4sx older than 0.25 shows its own table instead. |
 | **3 Join a mesh** | Opens a pane and runs `a4sx mesh join -`. You paste the invitation link there. a4sx shows the invitation and asks before it joins. |
 | **4 Open this menu with a key** | Shown only while no key opens the menu. Adds the key to herdr's config.toml after you say yes (see above). |
