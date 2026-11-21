@@ -749,6 +749,9 @@ class Deck:
         ops = []
         if not ah["running"]:
             ops.append(("A", "start the agent host (serves VS Code)", lambda: self.note([new_tab("agent host", os.path.expanduser("~"), [*A4SX_ARGV, "agent-host"])])))
+        else:   # a4sx #2326 (CLI 0.59.15): the same stop as Ctrl-C in its tab; an older a4sx says so in its own words
+            ops.append(("S", "stop the agent host (as Ctrl-C in its tab: VS Code is told first)",
+                        lambda: self.bg("stop the agent host", lambda: lines_of(run([*A4SX_ARGV, "agent-host", "stop"], 45))[-4:])))
         ops.append(("V", "set up VS Code's Agents window", lambda: self.note([new_tab("VS Code setup", os.path.expanduser("~"), [*A4SX_ARGV, "agent-host", "setup-vscode"])])))
         ops.append(("D", "check a4sx's folders (doctor)", lambda: self.bg("doctor", lambda: lines_of(run([*A4SX_ARGV, "doctor"], 120))[-8:])))
         return ops

@@ -4,6 +4,7 @@ import importlib.util
 import os
 import re
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -74,6 +75,32 @@ class NoHandOff(unittest.TestCase):
         self.assertNotIn("def handoff", src)
         self.assertNotIn("hands it off", src)
         self.assertIn("its conversation follows once a4sx #2292 lands", src)
+
+
+class StopHost(unittest.TestCase):
+    """a4sx #2326: a running agent host has "stop" (`a4sx agent-host stop`, the same stop as Ctrl-C); a stopped one "start"."""
+
+    def _ops(self, running):
+        ui = object.__new__(deck.Deck)
+        ui.d = types.SimpleNamespace(ah={"known": True, "running": running, "address": "ws://127.0.0.1:8765/", "open": []})
+        return ui, {k: (label, fn) for k, label, fn in ui.host_ops()}
+
+    def test_running_offers_stop_and_runs_the_clis_stop_in_the_background(self):
+        ui, ops = self._ops(True)
+        self.assertIn("S", ops)
+        self.assertNotIn("A", ops)
+        seen = {}
+        with mock.patch.object(deck.Deck, "bg", lambda self, title, fn: seen.update(title=title, lines=fn())), \
+                mock.patch.object(deck, "run", lambda argv, timeout=30, cwd=None: seen.update(argv=argv, t=timeout) or (0, "a4sx agent host: stopped (pid 4)\n", "")):
+            ops["S"][1]()
+        self.assertEqual(seen["argv"][-2:], ["agent-host", "stop"])
+        self.assertGreaterEqual(seen["t"], 35, "longer than the CLI's own 30 s wait")
+        self.assertEqual(seen["lines"], ["a4sx agent host: stopped (pid 4)"])
+
+    def test_stopped_offers_start_not_stop(self):
+        _ui, ops = self._ops(False)
+        self.assertIn("A", ops)
+        self.assertNotIn("S", ops)
 
 
 class StaleMarker(unittest.TestCase):
