@@ -20,6 +20,13 @@ The plugin is a thin launcher. Rules this file keeps:
     and only when the person answers yes in the menu: it then adds the key
     for the menu (a backup first, `herdr config check` after, the backup back
     if that fails).
+  * The one folder it may make is ~/projects/NAME (0.3.3), for a cell picked
+    from the home folder, which a4sx refuses to run a cell in. NAME is a
+    checked cell name; a link or a file there is refused, never followed.
+  * The one a4sx command it runs that changes something is
+    `a4sx mesh cell stop NAME` (0.3.3), for a cell that already runs on this
+    machine, and only after the person answers yes, once every other check
+    of the start has passed.
   * It starts a cell only as `a4sx launch --cell NAME`, plus flags from the
     person's own config file. Only the flags in ALLOWED_FLAGS are passed on,
     so the file cannot pick another cell, cannot let a cell act without
@@ -439,12 +446,14 @@ def cell_folder(cwd, name):
 
 
 def stop_command(exe, cell, cells):
-    """`a4sx mesh cell stop NAME`, with --mesh when another cell here has the same name."""
+    """`a4sx mesh cell stop NAME`; when another cell here has the same name, with `--mesh MESH_ID`, or
+    `--mesh standalone` for one in no mesh (a4sx refuses an ambiguous name). None when the mesh id can't be used."""
     name = str(cell["name"])
     same = [c for c in cells if c.get("name") == name]
-    mesh = str(cell.get("mesh_id") or "")
-    return [exe, "mesh", "cell", "stop", name] + (["--mesh", mesh] if len(same) > 1 and MESH_REF_RE.fullmatch(mesh)
-                                                  else [])
+    if len(same) < 2:
+        return [exe, "mesh", "cell", "stop", name]
+    mesh = str(cell.get("mesh_id") or "") or "standalone"
+    return [exe, "mesh", "cell", "stop", name, "--mesh", mesh] if MESH_REF_RE.fullmatch(mesh) else None
 
 
 def stop_it_there(exe, cell, cells):
@@ -456,17 +465,23 @@ def stop_it_there(exe, cell, cells):
         print("Nothing was stopped or started.")
         return False
     argv = stop_command(exe, cell, cells)
+    if argv is None:
+        print(f"«{name}» shares its name with another cell here and its mesh id can't be used, so nothing was "
+              f"stopped or started. Stop it where it runs (/exit in its Claude Code), then pick it again.")
+        return False
     try:
         r = subprocess.run(argv, capture_output=True, text=True, env=child_env(), stdin=subprocess.DEVNULL,
                            timeout=90)
     except subprocess.TimeoutExpired:
-        print(f"`{shlex.join(argv[1:])}` didn't finish within 90 seconds, so nothing was started here.")
+        print(f"`{shlex.join(argv[1:])}` didn't finish within 90 seconds, so nothing was started here. It may still "
+              f"be stopping: check with `a4sx mesh cells`, then pick it again.")
         return False
-    out = redact_text((r.stdout + r.stderr).strip())[:800]
+    out = redact_text((r.stdout + r.stderr).strip())
     if out:
-        print(out)
+        print(out[:800] + (" […]" if len(out) > 800 else ""))
     if r.returncode != 0:
-        print(f"«{name}» wasn't stopped, so nothing was started here.")
+        print(f"«{name}» wasn't stopped (or not yet), so nothing was started here. Check with `a4sx mesh cells`; "
+              f"once it no longer runs here, pick it again.")
         return False
     return True
 
@@ -527,21 +542,27 @@ def pane_cell_picker():
         return
     cell = usable[int(choice) - 1]
     name = str(cell["name"])
-    if running_here(exe, cell) and not stop_it_there(exe, cell, cells):
-        return wait_close()
-    cwd, note = cell_folder(cwd, name)
-    print(note or f"The cell starts in: {cwd}")
+    # Everything that can still refuse the start comes first (review: a running cell is stopped only once the
+    # start here can go on): its flags, its folder, herdr's pane list.
     # The full path: the same a4sx that listed the cells, whatever the PATH of
     # the new pane's shell says.
     command = shlex.join([exe, "launch", "--cell", name, *load_launch_args(name)])
-
+    cwd, note = cell_folder(cwd, name)
     origin = os.environ.get(ENV_ORIGIN_PANE)
     cwd_args = ["--cwd", cwd] if cwd else []
-    before = existing_pane_ids()
-    if not before or (origin and origin not in before):
-        # Without a readable pane list there is no way to tell a new pane from
-        # an old one, so nothing is typed.
-        raise PluginError("herdr's pane list could not be read. Run this yourself:\n  " + command)
+
+    def pane_ids():
+        ids = existing_pane_ids()
+        if not ids or (origin and origin not in ids):
+            # Without a readable pane list there is no way to tell a new pane from
+            # an old one, so nothing is typed.
+            raise PluginError("herdr's pane list could not be read. Run this yourself:\n  " + command)
+        return ids
+    pane_ids()
+    if running_here(exe, cell) and not stop_it_there(exe, cell, cells):
+        return wait_close()
+    print(note or f"The cell starts in: {cwd}")
+    before = pane_ids()   # again: the stop may have closed a pane
     before |= {origin} if origin else set()
     if origin:
         result = run_herdr(["pane", "split", origin, "--direction", "right", *cwd_args, "--focus"])

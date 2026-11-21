@@ -68,7 +68,10 @@ class Picker(unittest.TestCase):
             json.dump({"v": 1, "cells": cells}, f)
 
     def a4sx_calls(self):
-        return [json.loads(x) for x in open(self.log)] if os.path.exists(self.log) else []
+        if not os.path.exists(self.log):
+            return []
+        with open(self.log) as f:
+            return [json.loads(x) for x in f]
 
     def pick(self, answers):
         out = io.StringIO()
@@ -147,8 +150,61 @@ class Picker(unittest.TestCase):
         with open(self.stop_rc, "w") as f:
             f.write("1")
         out = self.pick(["1", "y"])
-        self.assertIn("«cell01» wasn't stopped, so nothing was started here.", out)
+        self.assertIn("«cell01» wasn't stopped (or not yet), so nothing was started here. Check with `a4sx mesh "
+                      "cells`; once it no longer runs here, pick it again.", out)
         self.assertFalse([c for c in self.herdr_calls if c[:2] == ["pane", "split"]])
+
+    def stops(self):
+        return [c for c in self.a4sx_calls() if c[1:4] == ["mesh", "cell", "stop"]]
+
+    def test_a_running_cell_with_a_broken_launch_args_file_is_never_stopped(self):
+        self.running()
+        cfg = os.path.join(self.home, "cfg", "herdr", "plugins", "a4sx.mesh")
+        os.makedirs(cfg, exist_ok=True)
+        with mock.patch.object(plugin, "launch_args_path", return_value=os.path.join(cfg, "launch-args.json")):
+            with open(os.path.join(cfg, "launch-args.json"), "w") as f:
+                f.write('{"default": ["--yes"]}')
+            with self.assertRaises(plugin.PluginError):
+                self.pick(["1", "y"])
+        self.assertEqual(self.stops(), [])   # review: stopped only once the start here can go on
+
+    def test_a_running_cell_whose_folder_cant_be_used_is_never_stopped(self):
+        self.running()
+        os.makedirs(os.path.join(self.home, "projects"))
+        os.symlink("/", os.path.join(self.home, "projects", "cell01"))
+        with self.assertRaises(plugin.PluginError):
+            self.pick(["1", "y"])
+        self.assertEqual(self.stops(), [])
+
+    def test_a_folder_that_cant_be_made_starts_nothing(self):
+        with open(os.path.join(self.home, "projects"), "w") as f:
+            f.write("a file, not a folder")
+        with self.assertRaises(plugin.PluginError) as e:
+            self.pick(["1"])
+        self.assertIn("couldn't be made", str(e.exception))
+
+    def test_a_link_to_the_home_folder_counts_as_home(self):
+        link = os.path.join(self.home, "work-link")
+        os.symlink(self.home, link)
+        with mock.patch.dict(os.environ, {plugin.ENV_ORIGIN_CWD: link}):
+            self.pick(["1"])
+        self.assertEqual(self.split_cwd(), os.path.join(self.home, "projects", "cell01"))
+
+    def test_a_stop_that_times_out_starts_nothing_and_says_what_next(self):
+        self.running()
+        import subprocess
+        with mock.patch.object(plugin.subprocess, "run", side_effect=subprocess.TimeoutExpired("a4sx", 90)), \
+                mock.patch.object(plugin, "own_cells", return_value=[
+                    {"name": "cell01", "mesh_id": "m-1", "local": {"state": "running"}}]):
+            out = self.pick(["1", "y"])
+        self.assertIn("didn't finish within 90 seconds, so nothing was started here. It may still be stopping", out)
+        self.assertFalse([c for c in self.herdr_calls if c[:2] == ["pane", "split"]])
+
+    def test_a_standalone_cell_sharing_its_name_is_stopped_as_standalone(self):
+        cells = [{"name": "cell01", "mesh_id": "m-1"}, {"name": "cell01", "mesh_id": None}]
+        self.assertEqual(plugin.stop_command("a4sx", cells[1], cells),
+                         ["a4sx", "mesh", "cell", "stop", "cell01", "--mesh", "standalone"])
+        self.assertIsNone(plugin.stop_command("a4sx", {"name": "cell01", "mesh_id": "-x"}, cells))
 
     def test_two_cells_with_one_name_stop_the_picked_one_by_its_mesh(self):
         cells = [{"name": "cell01", "mesh_id": "m-1"}, {"name": "cell01", "mesh_id": "m-2"}]
