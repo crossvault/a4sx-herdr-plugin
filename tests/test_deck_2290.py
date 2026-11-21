@@ -85,8 +85,13 @@ class StaleMarker(unittest.TestCase):
         path = os.path.join(d, "pane.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(marker)
-        answer = {"result": {"panes": panes}}
-        return path, mock.patch.object(deck, "_marker", lambda: path), mock.patch.object(deck, "jrun", lambda argv, t=30: answer), \
+        by = {p["pane_id"]: p for p in panes}
+
+        def jrun(argv, t=30):
+            if argv[1:3] == ["pane", "get"]:   # what herdr's pane get answers (a4sx's live check reads this shape)
+                return {"result": {"pane": by.get(argv[3], {})}} if argv[3] in by else {}
+            return {"result": {"panes": panes}}
+        return path, mock.patch.object(deck, "_marker", lambda: path), mock.patch.object(deck, "jrun", jrun), \
             mock.patch.object(deck, "_deck_alive", lambda pid: False)
 
     def test_another_pane_with_the_same_id_is_not_the_deck_and_the_marker_goes(self):
@@ -100,6 +105,11 @@ class StaleMarker(unittest.TestCase):
         with a, b, c:
             self.assertEqual(deck.deck_state(), ("w1:p3", "w1:t2", False))
         self.assertTrue(os.path.exists(path))
+
+    def test_a_pane_herdr_cant_answer_for_is_not_typed_into(self):
+        path, a, b, c = self._with("w1:p3 99999 w1:t2", [{"pane_id": "w1:p3", "tab_id": "w1:t2"}])
+        with a, b, c, mock.patch.object(deck, "_pane_has_agent", lambda pane: True):
+            self.assertEqual(deck.deck_state(), (None, None, False))
 
     def test_an_old_marker_without_a_tab_is_never_trusted(self):
         path, a, b, c = self._with("w1:p3 99999", [{"pane_id": "w1:p3", "tab_id": "w1:t2"}])

@@ -214,7 +214,7 @@ def deck_state():
             alive = _deck_alive(pid)
             # review: a pane id comes back for other panes: only the deck's own restored pane (the same tab, no agent
             # in it) is taken as the deck's; anything else means the marker is stale, and it is dropped
-            if alive or (tab and p.get("tab_id") == tab and not p.get("agent") and not p.get("agent_session")):
+            if alive or (tab and p.get("tab_id") == tab and not _pane_has_agent(mine)):
                 return mine, p.get("tab_id"), alive
             _drop_marker()
             break
@@ -222,6 +222,16 @@ def deck_state():
         if (p.get("terminal_title_stripped") or "") == DECK_TITLE:
             return p.get("pane_id"), p.get("tab_id"), True
     return None, None, False
+
+
+def _pane_has_agent(pane):
+    """Review: whether herdr knows an agent in `pane` (`herdr pane get`: result.pane.agent / agent_session, the shape
+    a4sx's own herdr check reads live). No answer counts as an agent: never type into a pane that can't be checked."""
+    got = jrun([HERDR, "pane", "get", pane], 8)
+    info = (got.get("result") or {}).get("pane") if isinstance(got, dict) else None
+    if not isinstance(info, dict):
+        return True
+    return bool(info.get("agent") or info.get("agent_session"))
 
 
 def _drop_marker():
@@ -1049,14 +1059,17 @@ def pane():
                 break
     finally:
         stop.set()
-        if not WIN:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        sys.stdout.write("\033[?25h\033[0m\033[2J\033[H")
-        try:
+        try:   # review: the marker first: after herdr closed the pane the tty is gone and its restore may raise
             with open(_marker(), encoding="utf-8") as f:
                 if mine and f.read().strip().split(" ")[:2] == [mine, str(os.getpid())]:
                     os.remove(_marker())
         except OSError:
+            pass
+        try:
+            if not WIN:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            sys.stdout.write("\033[?25h\033[0m\033[2J\033[H")
+        except (OSError, termios.error if termios else OSError):
             pass
 
 
