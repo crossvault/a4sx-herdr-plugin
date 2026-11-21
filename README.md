@@ -23,11 +23,13 @@ herdr plugin install crossvault/a4sx-herdr-plugin
 herdr plugin action list --plugin a4sx.mesh
 ```
 
-herdr shows what the plugin declares and asks before it installs. The second command lists four actions: `menu`, `start-cell`, `peers`, `join`.
+To pin a version, give `--ref` a branch, a tag or the FULL commit id: herdr hands it to `git fetch`, which can't fetch a short commit id.
+
+herdr shows what the plugin declares and asks before it installs. Over SSH, with no terminal to answer in (`herdr --remote … plugin install`), add `--yes`. The second command lists four actions: `menu`, `start-cell`, `peers`, `join`.
 
 To work on the plugin, clone the repository and run `herdr plugin link /path/to/a4sx-herdr-plugin` instead.
 
-herdr has no menu for plugin actions, so bind one key to the plugin's menu. Add this to `~/.config/herdr/config.toml`:
+**Bind a key first.** herdr has no menu for plugin actions, so one key opens the plugin's menu. The easiest way: open the menu once (below) and choose **4**; the plugin adds the key to herdr's config (for all your herdr sessions; named sessions have none of their own) after you say yes (it backs the file up first and checks it with `herdr config check`). Or add this to `~/.config/herdr/config.toml` yourself:
 
 ```toml
 [[keys.command]]
@@ -37,9 +39,9 @@ command = "a4sx.mesh.menu"
 description = "a4sx menu"
 ```
 
-Then run `herdr server reload-config`. `Ctrl+b`, then `a` opens the menu. The plugin cannot add the key for you; herdr gives plugins no way to do that.
+Then run `herdr server reload-config`. Your herdr prefix key (herdr's default is `Ctrl+b`; Omarchy's is `Ctrl+Space`), then `a`, opens the menu. If `a` is taken, pick another key; `herdr config check` names a clash.
 
-Without a key, every action also runs from a pane:
+Without a key, the menu also opens from a pane. herdr itself then prints its JSON answer to the command first; with the key, nothing is printed:
 
 ```
 herdr plugin action invoke a4sx.mesh.menu
@@ -52,8 +54,9 @@ If you linked a clone, run `herdr plugin link` on the folder again after you upd
 | Choice | What happens |
 |---|---|
 | **1 Start a cell** | Lists the cells on this machine. You type a number. The plugin splits the pane you were in and types `a4sx launch --cell NAME` there, in the same folder. |
-| **2 Mesh peers** | Shows a4sx's own peer table for each of your cells that is in a mesh. Enter refreshes, `q` closes. |
+| **2 Mesh peers** | For each of your cells in a mesh: every session by name, where it is (this cell, this machine, your other machine, another account's) and its status (online, offline, waits for approval, …). `i` then Enter shows the ids and keys, Enter refreshes, `q` then Enter closes. An a4sx older than 0.25 shows its own table instead. |
 | **3 Join a mesh** | Opens a pane and runs `a4sx mesh join -`. You paste the invitation link there. a4sx shows the invitation and asks before it joins. |
+| **4 Open this menu with a key** | Shown only while no key opens the menu. Adds the key to herdr's config.toml after you say yes (see above). |
 
 Enter alone closes the menu.
 
@@ -81,8 +84,9 @@ On a host without a4sx's sandbox (most hosts today), a4sx starts a mesh cell onl
 
 The plugin is one Python file with no dependencies. It runs:
 
-- `a4sx mesh cells --json`, to list your cells. It reads only `name`, `mesh_name`, `mesh_id`, `needs_approval` and `default` from the answer, and shows no key fields.
-- `a4sx mesh peers MESH --cell NAME --no-browser`, shown as a4sx prints it.
+- `a4sx mesh cells --json`, to list your cells. It reads only `name`, `instance_id`, `mesh_name`, `mesh_id`, `needs_approval` and `default` from the answer, and shows no key fields.
+- `a4sx mesh peers MESH --cell NAME --json --no-browser`, for the peers view, and in the cell picker for a cell a4sx notes as waiting for approval (that note can be out of date: the mesh's own list says whether the cell is active now). An a4sx without `--json` gets its own table shown instead.
+- Only when you choose **4** and say yes: it appends the key block to herdr's `config.toml` (after a copy to `config.toml.a4sx-backup`), runs `herdr config check` (and puts the file back if that fails) and `herdr server reload-config`.
 - `a4sx launch --cell NAME` with your flags, typed into the new pane.
 - `a4sx mesh join -` in a pane, with you at the keyboard.
 - `herdr plugin pane open`, `herdr pane list`, `herdr pane split`, `herdr tab create`, `herdr pane run`. The launch command is typed only into a pane that was not there before, with a4sx's full path.
