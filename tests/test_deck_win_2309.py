@@ -86,3 +86,35 @@ class FirstCell(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FirstCellOnScreen(unittest.TestCase):
+    """Review of #8: the screen itself, per view: the lines show where f works, and only there."""
+
+    def _draw(self, view, rows=(), at="12:00:00"):
+        ui = deck.Deck()
+        ui.d.at, ui.d.rows = at, list(rows)
+        ui.view = view
+        out = []
+        with mock.patch.object(deck.sys.stdout, "write", out.append), mock.patch.object(deck.sys.stdout, "flush", lambda: None), \
+                mock.patch.object(deck.shutil, "get_terminal_size", lambda *a: os.terminal_size((200, 60))), \
+                mock.patch.object(deck, "run", lambda *a, **k: (0, "", "")), mock.patch.object(deck, "jrun", lambda *a, **k: {}):
+            ui.draw()
+        return ui, deck.ANSI.sub("", "".join(out))
+
+    def test_mesh_and_host_show_the_step_and_bind_f(self):
+        for view in ("mesh", "host"):
+            ui, screen = self._draw(view)
+            self.assertIn("No cell on this host yet", screen, view)
+            self.assertIn("f", [k for k, _lbl, _fn in ui.ops], view)
+
+    def test_rules_shows_neither(self):
+        ui, screen = self._draw("rules")
+        self.assertNotIn("No cell on this host yet", screen)
+        self.assertNotIn("f", [k for k, _lbl, _fn in ui.ops])
+
+    def test_not_before_the_first_read_nor_with_cells(self):
+        for kw in ({"at": None}, {"rows": [{"name": "x", "here": False, "mine": True, "presence": "online", "owner": "me",
+                                            "role": "", "state": "", "running": False, "pane": None, "cwd": None}]}):
+            ui, screen = self._draw("mesh", **kw)
+            self.assertNotIn("No cell on this host yet", screen, kw)

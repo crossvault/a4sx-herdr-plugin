@@ -3,8 +3,8 @@
 ## 0.4.4 - 2026-11-22
 
 From cell01's from-scratch runs (a4sx #2309 F6, bb):
-- **Bring here on a cell that is online on another host** says so first: "«cell» is online on another host now, so it can't be brought here yet: stop it there first (on that host's deck: x stops it), then bring it here". It creates no folder and opens no tab. Before, it made ~/projects/<cell>, opened a tab, and the start then failed. A cell that is offline there is brought here as before.
-- **A fresh host is no empty frame.** Once the mesh data is read and no cell is stored or listed, the cells list shows the one next step in the CLI's own words: `a4sx launch --cell` in a project folder, which claims a new cell in your browser (`a4sx launch --cell -` starts one with a code from the console). **f** asks for a project folder name (a-z, 0-9 and -) and starts it there, in a new tab in ~/projects/<name>.
+- **Bring here on a cell that is online on another host** says so first: "«cell» is online on another host now, so it can't be brought here yet: stop it there first (on that host's deck: x stops it), then bring it here". It creates no folder and opens no tab; **.** reads the mesh again once it is stopped there. Before, it made ~/projects/<cell>, opened a tab, and the start then failed. A cell that is offline there is brought here as before.
+- **A fresh host is no empty frame.** Once the mesh data is read and no cell is stored or listed, the cells list shows the one next step in the CLI's own words: `a4sx launch --cell` in a project folder, which claims a new cell in your browser (`a4sx launch --cell -` starts one with a code from the console). **f** asks for a project folder name (a-z, 0-9 and -; name it like the cell you will claim) and starts it there, in a new tab in ~/projects/<name>. A cell of yours on another host is brought here with view 5, **n**. The traffic-rules view (3) doesn't show this step.
 
 ## 0.4.3 - 2026-11-22
 

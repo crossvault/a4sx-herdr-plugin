@@ -81,7 +81,8 @@ FIRST_CELL_LINES = [
     "      a4sx launch --cell",
     "",
     "  It claims a new cell in your browser (`a4sx launch --cell -` starts one with a code from the console).",
-    "  f starts it here, in a new tab in ~/projects/<name>.",
+    "  f starts it here, in a new tab in ~/projects/<name>; name the folder like the cell you will claim.",
+    "  A cell of yours on another host: view 5, n brings it here by its name.",
 ]
 
 
@@ -1101,10 +1102,13 @@ class Deck:
         """a4sx #2309 (bb), cell01: on a fresh host (the mesh data read, no cell stored here, none listed) the deck
         showed MESH "—", PEOPLE 0, CELLS 0 and no next step."""
         d = getattr(self, "d", None)
-        return bool(d is not None and d.at and not d.cells and not d.rows)
+        if d is None:
+            return False
+        with d.lock:   # review: _refresh sets `at` and the lists in one locked block; never a half-written read
+            return bool(d.at and not d.cells and not d.rows)
 
     def first_cell(self):
-        self.ask("a name for its project folder (~/projects/<name>)", lambda t: self.note(
+        self.ask("a name for its project folder (~/projects/<name>), like the cell's", lambda t: self.note(
             [new_tab("first cell", self.pdir(t), [*A4SX_ARGV, "launch", "--cell"])] if CELL_NAME_RE.fullmatch(t)
             else [f"«{ANSI.sub('', t)[:64]}» isn't a folder name the deck takes here (a-z, 0-9 and -), so nothing was "
                   "started"]))
@@ -1125,7 +1129,7 @@ class Deck:
         if self.online_elsewhere(name) is not None:   # F6: said first; no folder, no tab, no start
             return self.note([f"«{name}» is online on another host now, so it can't be brought here yet: stop it there "
                               "first (on that host's deck: x stops it), then bring it here",
-                              f"{DIM}nothing was created or started{RS}"], name)
+                              f"{DIM}nothing was created or started; . reads the mesh again{RS}"], name)
         argv = [*A4SX_ARGV, "launch", "--cell", name] + (["--a4sx-session", f"handoff-{name}"] if with_handoff else [])
         self.note([new_tab(name, self.pdir(name), argv, cell=name),
                    "the tab shows the outcome: the cell moves here when it is yours, you are signed in here and it is stopped there",
@@ -1204,7 +1208,7 @@ class Deck:
                 L.append(hl(k, f"{mark(k)} {FG}{B if r['here'] else ''}{fit(r['name'] or '?', 25)}{RS} {DIM}{fit(own, 25)}{RS} {fit(where, 17)} {self.state_cell(r, tick)}"))
             title = {"mesh": "CELLS", "rules": "CELLS · traffic", "host": "CELLS ON THIS HOST"}[self.view]
             self.ops = self.cell_ops(cur) if cur else []
-            if self.first_cell_due():   # a4sx #2309 (bb): a fresh host is no empty frame: the one next step
+            if self.view != "rules" and self.first_cell_due():   # a4sx #2309 (bb): a fresh host's one next step
                 L += FIRST_CELL_LINES
                 self.ops = [("f", "start your first cell here …", self.first_cell)]
             if self.view == "rules":
@@ -1363,7 +1367,6 @@ class Deck:
             self.note(["what a cell on another host is doing: needs the mesh's activity log as a command",
                        "held messages of a local cell: readable only from inside the cell today (herdr marks the pane)",
                        "stopping a cell that runs on another host from here: you stop it there, then bring it here",
-                       "a host with your sign-in and no cell yet: the deck lists nothing (view 5, n brings a cell by name)",
                        "a moved cell's conversation: follows once a4sx #2292 lands (until then it starts there anew)",
                        "which herdr pane a cell runs in: the deck matches by folder name"], "not possible yet")
         else:
