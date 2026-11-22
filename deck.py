@@ -22,6 +22,7 @@ import select
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -217,10 +218,17 @@ def recorded_cwd(name, iid):
     A cell's tab isn't always in ~/projects/<cell>."""
     if not CELL_NAME_RE.fullmatch(str(name or "")) or not isinstance(iid, str) or not iid:
         return None
-    try:
-        with open(os.path.join(STATE, "a4sx", "agents", name, "state", CELL_LAST_FILE), encoding="utf-8") as f:
-            got = json.load(f)
-    except (OSError, ValueError):
+    try:   # review: a regular file only (a FIFO would hang the read, as the CLI's pf_open_regular guards), 1 MiB at most
+        fd = os.open(os.path.join(STATE, "a4sx", "agents", name, "state", CELL_LAST_FILE),
+                     os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            raw = os.read(fd, 1 << 20)
+        finally:
+            os.close(fd)
+        got = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
         return None
     e = ((got.get("cells") if isinstance(got, dict) else None) or {}).get(iid) if isinstance(got, dict) else None
     cwd = e.get("cwd") if isinstance(e, dict) else None
@@ -1045,10 +1053,22 @@ class Deck:
             cwd = (recorded_cwd(r["name"], r.get("iid")) if ok_name else None) or self.pdir(r["name"])
             # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab;
             # 0.4.7: or, without the deck's record, the idle shell in that folder
+            argv = [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved]
             old = _leftover_pane(r["name"]) if ok_name else None
-            reuse = old if old and pane_is_idle_shell(old[0]) else (_pane_in_folder(cwd, deck_state()[1]) if ok_name else None)
-            return res + [new_tab(r["name"], cwd, [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved],
-                                  cell=r["name"], reuse=reuse)]
+            if old and pane_is_idle_shell(old[0]):
+                return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=old)]
+            there = _pane_in_folder(cwd, deck_state()[1]) if ok_name else None
+            if there:
+                # review: a shell in that folder may be the person's own (their tab, their exported variables): asked,
+                # never taken by itself
+                self.msg = ""
+                self.choose(f"a shell prompt is open in {cwd} (pane {there[0]}). Start «{r['name']}» in it? It keeps "
+                            "that shell's environment; the start command is typed into it",
+                            ["no, open a new tab", "yes, start it in that shell"],
+                            lambda i: self.bg(f"{r['name']} ← «{saved}»", lambda: res + [
+                                new_tab(r["name"], cwd, argv, cell=r["name"], reuse=there if i == 1 else None)]))
+                return None
+            return res + [new_tab(r["name"], cwd, argv, cell=r["name"])]
         self.bg(f"{r['name']} ← «{saved}»", work)
 
     def takeover(self, saved):

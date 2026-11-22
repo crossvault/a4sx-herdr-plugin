@@ -414,8 +414,40 @@ class Deck047Restore(unittest.TestCase):
                     mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(cwd=cwd, reuse=reuse) or "ok"):
                 # a stale row says running; the fresh check says it doesn't run here: no stop is run or shown
                 ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "omarchy-cell-backup")
+                # review: a shell found only by its folder may be the person's own: asked first, never taken by itself
+                self.assertEqual(got, {})
+                self.assertEqual(ui.pick[1], "yes, start it in that shell")
+                ui.pick_cb(1)
             self.assertEqual(got, {"cwd": demo, "reuse": ("w1:p9", "w1:t3")})
             self.assertFalse(any("stop" in a for a in ran), ran)
+
+    def test_r_a_non_cell_shell_in_that_folder_is_not_typed_into_on_no(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": demo}}}, f)
+            ui, _seen = _ui([_row("omarchy-cell", here=True)])
+            ui.d.refresh = lambda what: None
+            got = {}
+            with mock.patch.object(deck, "STATE", st), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                    mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None: ("w1:p5", "w1:t5")), \
+                    mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": False}, "x")
+                ui.pick_cb(0)
+            self.assertEqual(got, {"reuse": None})
+
+    def test_recorded_cwd_refuses_a_fifo(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st:
+            rec = os.path.join(st, "a4sx", "agents", "c1", "state")
+            os.makedirs(rec)
+            os.mkfifo(os.path.join(rec, "cell-last-session.json"))
+            with mock.patch.object(deck, "STATE", st):
+                self.assertIsNone(deck.recorded_cwd("c1", "ins_A"))
 
     def test_recorded_cwd_only_a_folder_of_this_cells_own_record(self):
         import tempfile
