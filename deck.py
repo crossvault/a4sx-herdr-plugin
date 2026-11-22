@@ -239,6 +239,32 @@ def pane_is_empty_shell(pane):
     return sp is not None and _shell_children(sp) == []
 
 
+def runs_elsewhere(r):
+    """0.4.6 (r): your cell, stored here too, online and not running on this host: it runs on another host now."""
+    return bool(r.get("here") and r.get("mine") and r.get("presence") == "online" and not r.get("running"))
+
+
+def of_cell(saved, cell):
+    """0.4.6 (q): a save of this cell, by the names the front ends give them (`<cell>-backup`, `handoff-<cell>`)."""
+    return bool(cell) and saved in (f"{cell}-backup", f"handoff-{cell}", cell)   # review: exact names, not a prefix
+
+
+def own_messages(d, cell, n=12):
+    """0.4.6: a running cell's own last deliveries, from the records the deck reads anyway (newest first)."""
+    with d.lock:
+        acts = [a for a in d.activity if a[2] == cell][:n]
+        read = getattr(d, "activity_read", True)
+    if not acts:
+        return ["no messages recorded on this host for this cell yet" if read else "reading this host's delivery records …"]
+    return [f"{time.strftime('%m-%d %H:%M', time.localtime(at))}  {'from' if way == 'in' else 'to  '} {peer}  {status}"
+            for at, way, _c, peer, status in acts]
+
+
+def restore_order(lib, cell):
+    """0.4.6 (q): newest first ("YYYY-MM-DD HH:MM" sorts as text)."""
+    return sorted(lib, key=lambda x: x.get("updated") or "", reverse=True)
+
+
 def _ancestors(pid, n=16):
     """pid and its parents, nearest first (Linux /proc), at most n; [] when they can't be read."""
     out, cur = [], pid
@@ -592,6 +618,7 @@ class Data:
         self.members, self.rows, self.cells, self.agents, self.requests, self.library = [], [], [], [], [], []
         self.mine = {}
         self.activity, self.n = [], 0
+        self.activity_read = False                # 0.4.6 (cell01): "reading…" until the first read of the records
         self.ah = {"running": False, "address": "", "known": False, "open": []}
         self.peers = []
         self.t_server = self.t_rare = self.t_act = 0.0
@@ -736,11 +763,14 @@ class Data:
         if IN_HERDR and server_due:
             label_panes(rows, cells, clear=agents_ok)
         self.n += 1
-        if ref and (force or now - self.t_act >= T_SERVER):   # local delivery records, no server request
+        if not ref:   # review: no mesh, no records to read: the panel says "none yet", not "reading …" forever
+            with self.lock:
+                self.activity_read = True
+        elif force or now - self.t_act >= T_SERVER:   # local delivery records, no server request
             self.t_act = now
             act = self.load_activity(ref, rows)
             with self.lock:
-                self.activity = act
+                self.activity, self.activity_read = act, True
         if LIMITED[0] > self.seen_limit:   # this very refresh was told to slow down
             self.seen_limit = LIMITED[0]
             self.slow_until = time.time() + self.backoff
@@ -782,8 +812,9 @@ class Deck:
         if self.view == "host":
             return [r for r in d.rows if r["here"]]
         if self.view == "move":
-            return ([{"kind": "cell", **r} for r in d.rows if r["here"]]
-                    + [{"kind": "away", **r} for r in d.rows if not r["here"] and r.get("mine")]
+            # 0.4.6 (r): a cell stored here that runs on another host is listed with the cells on other hosts
+            return ([{"kind": "cell", **r} for r in d.rows if r["here"] and not runs_elsewhere(r)]
+                    + [{"kind": "away", **r} for r in d.rows if (not r["here"] or runs_elsewhere(r)) and r.get("mine")]
                     + [{"kind": "handoff", **x} for x in d.library if x["name"].startswith("handoff-")])
         return d.rows
 
@@ -799,7 +830,8 @@ class Deck:
             self.busy, self.msg = True, title + " …"
             try:
                 res = fn()
-                self.note(res if isinstance(res, list) else [str(res)], title)
+                if res is not None:   # review: an operation that showed its own note keeps it (no "None")
+                    self.note(res if isinstance(res, list) else [str(res)], title)
             except Exception as e:   # noqa: BLE001 -- a prototype: say it, keep the screen
                 self.msg = f"{title}: {e!r}"
             self.busy = False
@@ -899,9 +931,12 @@ class Deck:
             has = any(x["name"] == f"handoff-{r['name']}" for x in d.library)
             if r.get("mine"):
                 ops += [("s", "bring it here (starts it on this host)", lambda: self.bring(r["name"], False))]
-        ops += [("m", "last messages with your cell", lambda: self.bg(f"{me} ↔ {r['name']}", lambda: [
-            x.strip() for x in lines_of(run([*A4SX_ARGV, "mesh", "deliveries", r["name"], "--mesh", mesh, "--last", "8"]),
-                                        "no messages recorded here with this cell")]))]
+        if r.get("running"):   # 0.4.6 (cell01): a cell of this host: its own deliveries, not «me ↔ me»
+            ops += [("m", "its last messages", lambda: self.note(own_messages(d, r["name"]), f"{r['name']}: last messages"))]
+        else:
+            ops += [("m", "last messages with your cell", lambda: self.bg(f"{me} ↔ {r['name']}", lambda: [
+                x.strip() for x in lines_of(run([*A4SX_ARGV, "mesh", "deliveries", r["name"], "--mesh", mesh, "--last", "8"]),
+                                            "no messages recorded here with this cell")]))]
         if r["name"] != me:
             ops += [("w", "why can/can't you message it", lambda: self.bg(f"{me} → {r['name']}", lambda: lines_of(
                         run([*A4SX_ARGV, "mesh", "policy", mesh, "--explain", me, r["name"]])))),
@@ -923,25 +958,44 @@ class Deck:
                  lambda i: i == 1 and self.note([new_tab("delete", os.path.expanduser("~"), [*A4SX_ARGV, "delete", name])])))] if here or True else []
 
     def restore(self, r):
-        lib = self.d.library
+        """0.4.6 (q), cell01: newest first, and this cell's own saves (`<cell>-…`, `handoff-<cell>`) marked."""
+        lib = restore_order(self.d.library, r["name"])
         if not lib:
             return self.note(["your library is empty, or this host is not signed in (a4sx login)"])
         self.choose(f"start {r['name']} from which saved conversation? (a new local session seeded from it)",
-                    [f"{x['name']:<34}{DIM}{x['updated']}  v{x['vers']}  {x['size']}{RS}" for x in lib],
+                    [f"{(f'{CYAN}◆{RS} ' if of_cell(x['name'], r['name']) else '  ')}{x['name']:<34}{DIM}{x['updated']}  v{x['vers']}  {x['size']}{RS}"
+                     for x in lib],
                     lambda i: self.start_seeded(r, lib[i]["name"]))
 
     def start_seeded(self, r, saved):
+        pending = self.__dict__.setdefault("starting", set())
+        if r["name"] in pending:   # review: a second Enter while the first start is checked starts nothing more
+            return
+        pending.add(r["name"])
+
         def work():
+            try:
+                return seeded()
+            finally:
+                pending.discard(r["name"])
+
+        def seeded():
             if not r["running"]:   # cell01: it may have started since the last refresh (herdr restores cells)
                 now = self.running_now(r["name"], r.get("iid"))
                 if now is not None:
                     return [f"«{r['name']}» is already running on this host" + (f", in pane {now}: g goes there" if now else "")
                             + "; nothing was started"]
+                if self.still_elsewhere(r["name"]):   # 0.4.6: as s and n (F6): nothing is started here
+                    return self.elsewhere_lines(r["name"], "started here from a saved conversation", "start it here")
             res = []
             if r["running"]:
                 res += lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
                 time.sleep(2)
-            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved], cell=r["name"])]
+            # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab
+            old = _leftover_pane(r["name"]) if CELL_NAME_RE.fullmatch(str(r["name"])) else None
+            reuse = old if old and pane_is_idle_shell(old[0]) else None
+            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved],
+                                  cell=r["name"], reuse=reuse)]
         self.bg(f"{r['name']} ← «{saved}»", work)
 
     def takeover(self, saved):
@@ -993,6 +1047,8 @@ class Deck:
             return f"{CYAN}◆ here{RS} {MAG}VS Code{RS}"
         if r["running"]:
             return f"{CYAN}◆ here{RS} {DIM}{'no pane' if IN_HERDR else 'terminal'}{RS}"
+        if runs_elsewhere(r):   # 0.4.6 (r): runs on another host now
+            return f"{YEL}● elsewhere now{RS} {DIM}· stored here{RS}"
         return f"{CYAN}◇ stored here{RS}" if r["here"] else f"{DIM}elsewhere{RS}"
 
     def host_lines(self):
@@ -1226,10 +1282,13 @@ class Deck:
         return any((p.get("instance_id") == iid if iid else p.get("name") == name) and p.get("presence") == "online"
                    for p in got.get("peers") or [])
 
+    def elsewhere_lines(self, name, cant="brought here", then="bring it here"):
+        return [f"«{name}» is online on another host now, so it can't be {cant} yet: stop it there "
+                f"first (on that host's deck: x stops it), then {then}",
+                f"{DIM}nothing was created or started; . reads the mesh again{RS}"]
+
     def elsewhere_note(self, name):
-        return self.note([f"«{name}» is online on another host now, so it can't be brought here yet: stop it there "
-                          "first (on that host's deck: x stops it), then bring it here",
-                          f"{DIM}nothing was created or started; . reads the mesh again{RS}"], name)
+        self.note(self.elsewhere_lines(name), name)
 
     def bring(self, name, with_handoff):
         """Start a cell that is stored on another computer here: with the person's sign-in the server moves it. F6: a
@@ -1340,7 +1399,9 @@ class Deck:
             Rt = []
             if cur:
                 Rt = [f"{FG}{B}{cur['name']}{RS}  {self.state_cell(cur, tick)}", f"{DIM}of{RS} {cur['owner']} {DIM}{cur['role']}{RS}"]
-                if cur["here"]:
+                if cur["here"] and runs_elsewhere(cur):   # 0.4.6 (r): not "on <this host>" while it runs elsewhere
+                    Rt += [f"{DIM}on another host now; stored on{RS} {HOST} {DIM}too{RS}", ""]
+                elif cur["here"]:
                     Rt += [f"{DIM}on{RS} {HOST}" + (f" {DIM}· pane{RS} {cur['pane']}" if cur["pane"] else ""),
                            f"{DIM}in{RS} {cur['cwd'] or self.pdir(cur['name'])}",
                            f"{DIM}profile{RS} {cur['cell'].get('profile') or '—'}  {DIM}reach{RS} {pol.get('can_talk_to') if pol.get('can_talk_to') is not None else '?'} cells"]
@@ -1423,7 +1484,8 @@ class Deck:
                 what = {"inbox": "in the inbox", "sent": "sent, waiting for the confirmation", "delivered": "delivered", "held": f"{YEL}held for you{RS}"}.get(status, status)
                 A.append(f"{DIM}{time.strftime('%H:%M:%S', time.localtime(at))}{RS}  {FG}{fit(cell or '', 16)}{RS} {arrow} {FG}{fit(peer, 26)}{RS} {DIM}{what}{RS}")
             if not A:
-                A = [f"{DIM}no messages recorded on this host yet{RS}"]
+                A = [f"{DIM}no messages recorded on this host yet{RS}" if getattr(d, "activity_read", True)
+                     else f"{DIM}reading this host's delivery records …{RS}"]
             left_box = box(title, L, lw, top_h, BLUE, f"{sel + 1}/{len(its)}" if its else "") + box(
                 "MESSAGES OF THIS HOST'S CELLS", A, lw, main_h - top_h, GREEN, "newest first")
         o += side(left_box, box(rt_title, Rt, rw, main_h, MAG))

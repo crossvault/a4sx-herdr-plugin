@@ -283,5 +283,106 @@ class Recheck045(unittest.TestCase):
             self.assertIn(os.getppid(), up)
 
 
+class Deck046(unittest.TestCase):
+    """0.4.6, a4sx #2309 (q) and (r) from cell01's move round trip."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_the_restore_list_is_newest_first_with_this_cells_saves_marked(self):
+        lib = [{"name": "old", "updated": "2026-11-20 10:00"}, {"name": "build-backup", "updated": "2026-11-22 09:00"},
+               {"name": "handoff-build", "updated": "2026-11-21 12:00"}, {"name": "other-backup", "updated": "2026-11-22 10:00"}]
+        self.assertEqual([x["name"] for x in deck.restore_order(lib, "build")],
+                         ["other-backup", "build-backup", "handoff-build", "old"])
+        self.assertTrue(deck.of_cell("build-backup", "build") and deck.of_cell("handoff-build", "build"))
+        self.assertFalse(deck.of_cell("builder-x", "build") or deck.of_cell("other-backup", "build"))
+        # review: exact names only: another cell's backup or a save named build-notes is not marked
+        self.assertFalse(deck.of_cell("build-x-backup", "build") or deck.of_cell("build-notes", "build"))
+        ui, _seen = _ui()
+        ui.d.library = [dict(x, vers="1", size="1k") for x in lib]
+        got = {}
+        ui.choose = lambda title, items, cb: got.update(items=items)
+        ui.restore({"name": "build"})
+        shown = [deck.ANSI.sub("", x) for x in got["items"]]
+        self.assertTrue(shown[0].startswith("  other-backup") and shown[1].startswith("◆ build-backup"))
+
+    def test_r_reuses_the_idle_old_tab_and_refuses_while_online_elsewhere(self):
+        ui, seen = _ui([_row("build", here=True)])
+        ui.bg = lambda title, fn: seen.update(lines=fn())
+        got = {}
+        with mock.patch.object(deck, "_leftover_pane", lambda c: ("w1:p4", "w1:t2")), \
+                mock.patch.object(deck, "pane_is_idle_shell", lambda p: True), \
+                mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+            ui.start_seeded({"name": "build", "running": False}, "build-backup")
+        self.assertEqual(got["reuse"], ("w1:p4", "w1:t2"))
+        # review: the real bg() path, as the deck runs it: the refusal is what the result pane shows last, never "None"
+        ui2, _seen2 = _ui([_row("win-cell", here=True, presence="online")])
+        ui2.d.refresh = lambda what: None
+        notes = []
+        ui2.note = lambda lines, title="result": notes.append(list(lines))
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("started")):
+            ui2.start_seeded({"name": "win-cell", "running": False}, "handoff-win-cell")
+        self.assertEqual(len(notes), 1, notes)
+        self.assertIn("is online on another host now", notes[-1][0])
+        self.assertIn("can't be started here from a saved conversation yet", notes[-1][0])
+        self.assertNotIn("None", notes[-1])
+        self.assertEqual(ui2.starting, set())   # the double-press guard is released after the check
+
+    def test_r_second_enter_while_checking_starts_nothing_more(self):
+        ui, _seen = _ui([_row("build", here=True)])
+        ui.d.refresh = lambda what: None
+        ui.starting = {"build"}   # a first Enter is still being checked
+        ui.bg = lambda title, fn: self.fail("a second start was run")
+        ui.start_seeded({"name": "build", "running": False}, "build-backup")
+
+    def test_bg_keeps_a_note_the_operation_showed_itself(self):
+        ui, _seen = _ui()
+        ui.d.refresh = lambda what: None
+        notes = []
+        ui.note = lambda lines, title="result": notes.append(list(lines))
+        ui.bg("x", lambda: ui.note(["own note"]))
+        self.assertEqual(notes, [["own note"]])
+
+    def test_a_cell_stored_here_and_running_elsewhere_says_so(self):
+        ui, _seen = _ui()
+        ui.d.ah = {"open": []}
+        where = deck.ANSI.sub("", ui.where({"pane": None, "here": True, "running": False, "mine": True, "presence": "online", "name": "w"}))
+        self.assertEqual(where, "● elsewhere now · stored here")
+        where = deck.ANSI.sub("", ui.where({"pane": None, "here": True, "running": False, "mine": True, "presence": "offline", "name": "w"}))
+        self.assertEqual(where, "◇ stored here")
+
+
+class Deck046Remarks(unittest.TestCase):
+    """0.4.6, cell01's remarks on the 0.4.5 recheck."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_reading_until_the_first_read(self):
+        d = types.SimpleNamespace(lock=threading.Lock(), activity=[], activity_read=False)
+        self.assertEqual(deck.own_messages(d, "x"), ["reading this host's delivery records …"])
+        d.activity_read = True
+        self.assertEqual(deck.own_messages(d, "x"), ["no messages recorded on this host for this cell yet"])
+        with open(os.path.join(HERE, "..", "deck.py"), encoding="utf-8") as f:
+            self.assertIn("reading this host's delivery records …", f.read())
+
+    def test_m_on_a_running_cell_shows_its_own_deliveries(self):
+        d = types.SimpleNamespace(lock=threading.Lock(), activity_read=True, activity=[
+            (1763800000, "out", "omarchy-cell", "win-cell", "delivered"), (1763700000, "in", "other", "win-cell", "inbox")])
+        got = deck.own_messages(d, "omarchy-cell")
+        self.assertEqual(len(got), 1)
+        self.assertIn("to   win-cell  delivered", got[0])
+
+    def test_view_5_lists_a_cell_running_elsewhere_with_the_other_hosts(self):
+        ui, _seen = _ui([_row("win-cell", here=True, presence="online"), _row("omarchy-cell", here=True, presence="online", running=True)])
+        ui.d.library = []
+        ui.view = "move"
+        kinds = {x["name"]: x["kind"] for x in ui.items()}
+        self.assertEqual(kinds, {"win-cell": "away", "omarchy-cell": "cell"})
+        self.assertTrue(deck.runs_elsewhere(_row("win-cell", here=True, presence="online")))
+        self.assertFalse(deck.runs_elsewhere(_row("x", here=True, presence="online", running=True)))
+        self.assertFalse(deck.runs_elsewhere(_row("x", here=False, presence="online")))
+
+
 if __name__ == "__main__":
     unittest.main()
