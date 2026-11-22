@@ -440,6 +440,38 @@ class Deck047Restore(unittest.TestCase):
                 ui.pick_cb(0)
             self.assertEqual(got, {"reuse": None})
 
+    def test_r_esc_on_a_running_cell_leaves_it_running(self):
+        """Coordinator: the tab question comes BEFORE the stop: Esc stops nothing and starts nothing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": demo}}}, f)
+            ui, _seen = _ui([_row("omarchy-cell", here=True, running=True)])
+            ui.d.refresh = lambda what: None
+            ui.running_now = lambda name, iid=None: "w1:p2"   # it runs here, in pane w1:p2
+            ui.mode, ran, got = "browse", [], {}
+            with mock.patch.object(deck, "STATE", st), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                    mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None: ("w1:p5", "w1:t5")), \
+                    mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                    mock.patch.object(deck, "run", lambda argv, *a, **k: ran.append(argv) or (0, "", "")), \
+                    mock.patch.object(deck.time, "sleep", lambda s: None), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
+                self.assertEqual(ui.mode, "pick")
+                self.assertIn("(the cell is stopped first)", ui.pick_title)
+                self.assertEqual(ran, [], "nothing is stopped before the answer")
+                ui.key("esc")
+                self.assertEqual(ran, [])
+                self.assertEqual(got, {})
+                # and "yes": the stop runs then, and its line is shown with the start
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
+                ui.pick_cb(1)
+            self.assertTrue(any(a[-3:-1] == ["cell", "stop"] for a in ran), ran)
+            self.assertEqual(got, {"reuse": ("w1:p5", "w1:t5")})
+
     def test_recorded_cwd_refuses_a_fifo(self):
         import tempfile
         with tempfile.TemporaryDirectory() as st:
