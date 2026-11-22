@@ -240,12 +240,12 @@ def pane_is_empty_shell(pane):
 
 
 def _ancestors(pid, n=16):
-    """pid and its parents (Linux /proc), at most n; an empty set when they can't be read."""
-    out, cur = set(), pid
+    """pid and its parents, nearest first (Linux /proc), at most n; [] when they can't be read."""
+    out, cur = [], pid
     for _ in range(n):
-        if not isinstance(cur, int) or isinstance(cur, bool) or cur <= 1:
+        if not isinstance(cur, int) or isinstance(cur, bool) or cur <= 1 or cur in out:
             break
-        out.add(cur)
+        out.append(cur)
         try:
             with open(f"/proc/{int(cur)}/stat", encoding="ascii", errors="replace") as f:
                 cur = int(f.read().rsplit(")", 1)[1].split()[1])
@@ -254,30 +254,45 @@ def _ancestors(pid, n=16):
     return out
 
 
-#: 0.4.5: {cell pid: pane} found through the process tree, so a refresh asks herdr again only for a new pid
+#: 0.4.5: each agent pane's shell pid (it doesn't change while the pane lives), and {cell pid: pane or None} for the
+#: agent pane set it was looked up in: herdr is asked again only for a new pane or a new cell process (review of #9)
+_SHELL_OF_PANE: dict = {}
 _PANE_OF_PID: dict = {}
 
 
-def pane_of_pid(pid, agents):
-    """0.4.5 (cell01: «omarchy-cell» ran in a pane of this herdr session, shown "here, no pane"): a cell whose folder isn't
-    named after it is found by its process: the agent pane whose shell is one of the cell's launch's ancestors."""
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
-        return None
-    if pid in _PANE_OF_PID and any(a.get("pane_id") == _PANE_OF_PID[pid] for a in agents):
-        return _PANE_OF_PID[pid]
-    up = _ancestors(pid)
-    if not up:
-        return None
-    for a in agents:
-        pane = a.get("pane_id")
-        if not pane:
-            continue
+def _shell_pid_of(pane):
+    if pane not in _SHELL_OF_PANE:
         info = (jrun([HERDR, "pane", "process-info", "--pane", pane], 8).get("result") or {}).get("process_info")
         sp = info.get("shell_pid") if isinstance(info, dict) else None
-        if isinstance(sp, int) and not isinstance(sp, bool) and sp in up:
-            _PANE_OF_PID[pid] = pane
-            return pane
-    return None
+        _SHELL_OF_PANE[pane] = sp if isinstance(sp, int) and not isinstance(sp, bool) else None
+    return _SHELL_OF_PANE[pane]
+
+
+def pane_of_pid(pid, agents, taken=()):
+    """0.4.5 (cell01: «omarchy-cell» ran in a pane of this herdr session, shown "here, no pane"): a cell whose folder isn't
+    named after it is found by its process: the agent pane whose shell is the NEAREST of the launch's ancestors (review:
+    a launch started from inside another agent's pane, e.g. its Bash tool, passes through that pane's shell further up).
+    Panes in `taken` (matched to a cell by its folder) are never given to another cell: when the nearest one is taken,
+    the answer is None, never a pane further up. None too when no pane holds it."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return None
+    panes = tuple(sorted(a.get("pane_id") for a in agents if a.get("pane_id")))
+    key = (panes, tuple(sorted(taken)))
+    for gone in [p for p in _SHELL_OF_PANE if p not in panes]:
+        _SHELL_OF_PANE.pop(gone, None)
+    hit = _PANE_OF_PID.get(pid)
+    if hit is not None and hit[0] == key:   # a hit or a miss for this very pane set
+        return hit[1]
+    shells = {}
+    for pane in panes:
+        sp = _shell_pid_of(pane)
+        if sp is not None:
+            shells.setdefault(sp, pane)
+    found = next((shells[p] for p in _ancestors(pid) if p in shells), None)
+    if found in taken:
+        found = None
+    _PANE_OF_PID[pid] = (key, found)
+    return found
 
 
 def pane_is_idle_shell(pane):
@@ -576,7 +591,7 @@ class Data:
         """The last messages between this host's cells and every peer (from the local delivery records)."""
         acts = []
         # 0.4.5 (cell01): every row but this host's running cells: after a round trip a peer is stored here too
-        for r in [x for x in rows if not x["running"]][:12]:
+        for r in sorted((x for x in rows if not x["running"]), key=lambda x: (x["here"], x["presence"] != "online"))[:12]:
             for c in jrun([*A4SX_ARGV, "mesh", "deliveries", r["iid"] or r["name"], "--mesh", mesh, "--last", "4", "--json"], 15).get("cells") or []:
                 for x in c.get("rows") or []:
                     acts.append((x.get("at") or 0, x.get("dir"), c.get("cell"), x.get("peer") or r["name"], x.get("status") or ""))
@@ -674,6 +689,10 @@ class Data:
             if "requests" in got:
                 reqs = got["requests"] or []
 
+        # 0.4.5 review: the panes a running cell has by its folder name are never given to another cell by process
+        names_here = {c.get("name") for c in running}
+        taken = {x.get("pane_id") for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) in names_here}
+
         def row(name, iid, presence, own=None):
             m, c = owner.get(iid) or {}, local.get(iid)
             pane = state = cwd = None
@@ -683,7 +702,7 @@ class Data:
                 # cell's name on a plain Claude Code pane of another herdr session's owner (seen 2026-11-21)
                 a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
                 if a is None and IN_HERDR:   # 0.4.5: or the pane its launch runs in (a folder named otherwise)
-                    pp = pane_of_pid((c.get("local") or {}).get("pid"), agents)
+                    pp = pane_of_pid((c.get("local") or {}).get("pid"), agents, taken)
                     a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
                 if a:
                     pane, state, cwd = a.get("pane_id"), a.get("agent_status"), a.get("cwd")
@@ -1096,7 +1115,7 @@ class Deck:
                 now = self.running_now(name, iid)
                 if now is not None:
                     return self.already_running(name, now)
-                if self.online_elsewhere(name) is not None:   # 0.4.5 (F6): its old tab here is not reused either
+                if self.still_elsewhere(name):   # 0.4.5 (F6): its old tab here is not reused either
                     return self.elsewhere_note(name)
                 self._start_cell(name, argv)
             finally:
@@ -1174,19 +1193,40 @@ class Deck:
         return next((r for r in rows if r.get("name") == name and r.get("mine") and not r.get("running")
                      and r.get("presence") == "online"), None)
 
+    def still_elsewhere(self, name):
+        """0.4.5 review: the deck's presence is up to a minute old (`mesh peers` every T_SERVER). A cell it saw online and
+        not running here is refused only after a fresh `mesh peers` read still says so; a read that can't be made now
+        (slowed down, an error) refuses nothing, and the CLI decides in the tab as before. Runs in the background."""
+        r = self.online_elsewhere(name)
+        if r is None:
+            return False
+        d = self.d
+        if LIMITED[0] > getattr(d, "seen_limit", 0) or time.time() < getattr(d, "slow_until", 0) or not d.ref:
+            return False
+        got = jrun([*A4SX_ARGV, "mesh", "peers", d.ref, "--json"], 15)
+        if "peers" not in got:
+            return False
+        iid = r.get("iid")
+        return any((p.get("instance_id") == iid if iid else p.get("name") == name) and p.get("presence") == "online"
+                   for p in got.get("peers") or [])
+
     def elsewhere_note(self, name):
         return self.note([f"«{name}» is online on another host now, so it can't be brought here yet: stop it there "
                           "first (on that host's deck: x stops it), then bring it here",
                           f"{DIM}nothing was created or started; . reads the mesh again{RS}"], name)
 
     def bring(self, name, with_handoff):
-        """Start a cell that is stored on another computer here: with the person's sign-in the server moves it."""
-        if self.online_elsewhere(name) is not None:   # F6: said first; no folder, no tab, no start
-            return self.elsewhere_note(name)
+        """Start a cell that is stored on another computer here: with the person's sign-in the server moves it. F6: a
+        cell online elsewhere is said first (checked fresh, in the background) and nothing is created."""
         argv = [*A4SX_ARGV, "launch", "--cell", name] + (["--a4sx-session", f"handoff-{name}"] if with_handoff else [])
-        self.note([new_tab(name, self.pdir(name), argv, cell=name),
-                   "the tab shows the outcome: the cell moves here when it is yours, you are signed in here and it is stopped there",
-                   f"{DIM}running there? stop it there first (deck: x stops it){RS}"])
+
+        def work():
+            if self.running_now(name) is None and self.still_elsewhere(name):
+                return self.elsewhere_note(name)
+            self.note([new_tab(name, self.pdir(name), argv, cell=name),
+                       "the tab shows the outcome: the cell moves here when it is yours, you are signed in here and it is stopped there",
+                       f"{DIM}running there? stop it there first (deck: x stops it){RS}"])
+        threading.Thread(target=work, daemon=True).start()
 
     def state_cell(self, r, tick):
         if r["state"] == "working":

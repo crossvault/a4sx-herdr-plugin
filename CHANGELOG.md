@@ -3,11 +3,11 @@
 ## 0.4.5 - 2026-11-22
 
 From cell01's Omarchy recheck of 0.4.4 (a4sx #2309 F6, bb):
-- **F6 in the common case.** After one round trip, every cell is also stored on the other host, with its old tab there. Before, **s** on such a cell, while it was online on another host, reused its old tab and said "started"; view 5's **n** opened a new tab. In both cases the CLI then refused the start. Now **s** and **n** check first whether the cell is online and doesn't run on this host. If so, they show the same note as for a cell stored only elsewhere, and open, reuse and type nothing.
+- **F6 in the common case.** After one round trip, every cell is also stored on the other host, with its old tab there. Before, **s** on such a cell, while it was online on another host, reused its old tab and said "started"; view 5's **n** opened a new tab. In both cases the CLI then refused the start. Now **s** and **n** check first whether the cell is online and doesn't run on this host. The deck's presence can be a minute old, so they read `mesh peers` again before refusing. If the cell is still online there, they show the same note as for a cell stored only elsewhere, and open, reuse and type nothing. A cell just stopped here starts as before, and when the read can't be made (slowed down, an error), nothing is refused and the CLI decides in the tab.
 - **No claimed start.** The result line says "ran the start in its tab «cell» again (… the tab shows the outcome)" or "opened the tab «cell» (it shows the outcome)", because the CLI in the tab may still refuse.
-- **The first cell's tab** is named like its folder (first-cell), not «first cell».
-- **Messages of this host's cells** are read for every peer that doesn't run here. Before, a peer also stored here was left out, so the panel said "no messages recorded on this host yet" while `a4sx mesh deliveries` listed hundreds.
-- **A running cell whose folder isn't named after it** is found in the herdr pane its launch runs in: the agent pane whose shell is one of the launch's parent processes (herdr `pane process-info`, asked once per cell process). Before, it read "here, no pane".
+- **The first cell's tab** is named after the folder you type, not «first cell».
+- **Messages of this host's cells** are read for every peer that doesn't run here. Remote peers come first. Before, a peer also stored here was left out, so the panel said "no messages recorded on this host yet" while `a4sx mesh deliveries` listed hundreds.
+- **A running cell whose folder isn't named after it** is found in the herdr pane its launch runs in: the agent pane whose shell is the nearest of the launch's parent processes. It never takes a pane that another cell has by its folder name. herdr `pane process-info` is asked once per pane, and a cell's answer, including "none", is kept until the panes change. Before, it read "here, no pane".
 
 ## 0.4.4 - 2026-11-22
 
