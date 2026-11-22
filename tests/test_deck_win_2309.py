@@ -1,5 +1,6 @@
 """a4sx #2309 WIN items in the deck (plugin 0.4.4): F6, bring a cell here that is online elsewhere; (bb), a fresh host."""
 import importlib.util
+import json
 import os
 import threading
 import types
@@ -347,7 +348,8 @@ class Deck046(unittest.TestCase):
         ui, _seen = _ui()
         ui.d.ah = {"open": []}
         where = deck.ANSI.sub("", ui.where({"pane": None, "here": True, "running": False, "mine": True, "presence": "online", "name": "w"}))
-        self.assertEqual(where, "● elsewhere now · stored here")
+        self.assertEqual(where, "● runs elsewhere")   # 0.4.7: fits the where column (17)
+        self.assertLessEqual(len(where), 17)
         where = deck.ANSI.sub("", ui.where({"pane": None, "here": True, "running": False, "mine": True, "presence": "offline", "name": "w"}))
         self.assertEqual(where, "◇ stored here")
 
@@ -386,3 +388,182 @@ class Deck046Remarks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Deck047Restore(unittest.TestCase):
+    """0.4.7, cell01's Omarchy check of 0.4.6: r on a stopped cell whose tab is in another folder."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_r_starts_in_the_recorded_folder_reuses_its_idle_shell_and_runs_no_stop(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": demo}}}, f)
+            ui, _seen = _ui([_row("omarchy-cell", here=True)])
+            ui.d.refresh = lambda what: None
+            ran, got = [], {}
+            with mock.patch.object(deck, "STATE", st), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                    mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None, skip_pane=None: ("w1:p9", "w1:t3") if cwd == demo else None), \
+                    mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                    mock.patch.object(deck, "run", lambda argv, *a, **k: ran.append(argv) or (0, "", "")), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(cwd=cwd, reuse=reuse) or "ok"):
+                # a stale row says running; the fresh check says it doesn't run here: no stop is run or shown
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "omarchy-cell-backup")
+                # review: a shell found only by its folder may be the person's own: asked first, never taken by itself
+                self.assertEqual(got, {})
+                self.assertEqual(ui.pick[1], "yes, start it in that shell")
+                ui.pick_cb(1)
+            self.assertEqual(got, {"cwd": demo, "reuse": ("w1:p9", "w1:t3")})
+            self.assertFalse(any("stop" in a for a in ran), ran)
+
+    def test_r_a_non_cell_shell_in_that_folder_is_not_typed_into_on_no(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": demo}}}, f)
+            ui, _seen = _ui([_row("omarchy-cell", here=True)])
+            ui.d.refresh = lambda what: None
+            got = {}
+            with mock.patch.object(deck, "STATE", st), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                    mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None, skip_pane=None: ("w1:p5", "w1:t5")), \
+                    mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": False}, "x")
+                ui.pick_cb(0)
+            self.assertEqual(got, {"reuse": None})
+
+    def test_r_esc_on_a_running_cell_leaves_it_running(self):
+        """Coordinator: the tab question comes BEFORE the stop: Esc stops nothing and starts nothing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": demo}}}, f)
+            ui, _seen = _ui([_row("omarchy-cell", here=True, running=True)])
+            ui.d.refresh = lambda what: None
+            ui.running_now = lambda name, iid=None: "w1:p2"   # it runs here, in pane w1:p2
+            ui.mode, ran, got = "browse", [], {}
+            with mock.patch.object(deck, "STATE", st), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                    mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None, skip_pane=None: ("w1:p5", "w1:t5")), \
+                    mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                    mock.patch.object(deck, "run", lambda argv, *a, **k: ran.append(argv) or (0, "", "")), \
+                    mock.patch.object(deck.time, "sleep", lambda s: None), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
+                self.assertEqual(ui.mode, "pick")
+                self.assertIn("(the cell is stopped first)", ui.pick_title)
+                self.assertEqual(ran, [], "nothing is stopped before the answer")
+                ui.key("esc")
+                self.assertEqual(ran, [])
+                self.assertEqual(got, {})
+                # and "yes": the stop runs then, and its line is shown with the start
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
+                ui.pick_cb(1)
+            self.assertTrue(any(a[-3:-1] == ["cell", "stop"] for a in ran), ran)
+            self.assertEqual(got, {"reuse": ("w1:p5", "w1:t5")})
+
+    def test_r_the_decks_own_idle_record_pane_is_reused_without_a_question_and_never_asked_about(self):
+        """Review of 1fc8b2f: the record pane sits in the recorded folder too; it is reused as in 0.4.6, no question;
+        and a folder match is never the record pane itself."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": demo}}}, f)
+            ui, _seen = _ui([_row("omarchy-cell", here=True)])
+            ui.d.refresh = lambda what: None
+            ui.choose = lambda *a, **k: self.fail("asked about the deck's own pane")
+            got, skipped = {}, []
+            with mock.patch.object(deck, "STATE", st), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: ("w1:p4", "w1:t2")), \
+                    mock.patch.object(deck, "pane_is_idle_shell", lambda p: True), \
+                    mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None, skip_pane=None: skipped.append(skip_pane)), \
+                    mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": False}, "x")
+            self.assertEqual(got, {"reuse": ("w1:p4", "w1:t2")})
+            self.assertEqual(skipped, [], "no folder search when the record pane is idle")
+
+    def test_r_no_after_the_question_opens_a_new_tab_even_with_a_record_pane(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": demo}}}, f)
+            ui, _seen = _ui([_row("omarchy-cell", here=True, running=True)])
+            ui.d.refresh = lambda what: None
+            ui.running_now = lambda name, iid=None: "w1:p4"
+            idle = {"v": False}   # the record pane runs the cell (not idle) until the stop
+            got, skipped = {}, []
+
+            def run(argv, *a, **k):
+                idle["v"] = True
+                return 0, "", ""
+            with mock.patch.object(deck, "STATE", st), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: ("w1:p4", "w1:t2")), \
+                    mock.patch.object(deck, "pane_is_idle_shell", lambda p: idle["v"]), \
+                    mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None, skip_pane=None: skipped.append(skip_pane) or ("w1:p5", "w1:t5")), \
+                    mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                    mock.patch.object(deck, "run", run), mock.patch.object(deck.time, "sleep", lambda s: None), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
+                ui.pick_cb(0)   # no, open a new tab
+            self.assertEqual(skipped, ["w1:p4"], "the record pane is never the folder match")
+            self.assertEqual(got, {"reuse": None})
+
+    def test_recorded_cwd_refuses_a_fifo(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st:
+            rec = os.path.join(st, "a4sx", "agents", "c1", "state")
+            os.makedirs(rec)
+            os.mkfifo(os.path.join(rec, "cell-last-session.json"))
+            with mock.patch.object(deck, "STATE", st):
+                self.assertIsNone(deck.recorded_cwd("c1", "ins_A"))
+
+    def test_recorded_cwd_only_a_folder_of_this_cells_own_record(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st:
+            with mock.patch.object(deck, "STATE", st):
+                self.assertIsNone(deck.recorded_cwd("omarchy-cell", "ins_A"))      # no record
+                self.assertIsNone(deck.recorded_cwd("../x", "ins_A"))              # not a cell name
+                rec = os.path.join(st, "a4sx", "agents", "c1", "state")
+                os.makedirs(rec)
+                with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                    json.dump({"cells": {"ins_A": {"cwd": "/nonexistent-deck-folder"}, "ins_B": {"cwd": st}}}, f)
+                self.assertIsNone(deck.recorded_cwd("c1", "ins_A"))                # gone folder
+                self.assertEqual(deck.recorded_cwd("c1", "ins_B"), st)
+                self.assertIsNone(deck.recorded_cwd("c1", "ins_C"))                # another cell's entry only
+
+    def test_pane_in_folder_takes_only_an_idle_shell_there_without_an_agent(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as demo:
+            panes = [{"pane_id": "p1", "tab_id": "t1"}, {"pane_id": "p2", "tab_id": "t2"}, {"pane_id": "p3", "tab_id": "t3"}]
+            pids = {"p1": None, "p2": os.getpid(), "p3": os.getpid()}
+            os.chdir(demo)
+            try:
+                with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"panes": panes}}), \
+                        mock.patch.object(deck, "_idle_shell_pid", lambda p: pids[p]), \
+                        mock.patch.object(deck, "_pane_has_agent", lambda p: p == "p2"):
+                    self.assertEqual(deck._pane_in_folder(demo), ("p3", "t3"))
+                    self.assertIsNone(deck._pane_in_folder(demo, skip_tab="t3"))
+                    self.assertIsNone(deck._pane_in_folder(HERE))
+            finally:
+                os.chdir(HERE)
+
+    def test_r_says_online_elsewhere_before_the_picker(self):
+        ui, seen = _ui([_row("win-cell", here=True, presence="online")])
+        ui.choose = lambda *a, **k: self.fail("the picker was shown")
+        ui.restore({"name": "win-cell", "here": True, "mine": True, "presence": "online", "running": False})
+        self.assertIn("can't be started here from a saved conversation yet", seen["lines"][0])
