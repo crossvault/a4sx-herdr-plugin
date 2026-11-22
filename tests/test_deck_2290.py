@@ -190,7 +190,7 @@ class LeftoverShell(unittest.TestCase):
         deck._remember_cell_pane("build", "w1:p3", "w1:t2")
         self.panes["w1:p3"] = {"pane_id": "w1:p3", "tab_id": "w1:t2"}
         out = deck.new_tab("build", self.cwd, ["a4sx", "launch", "--cell", "build"], cell="build", reuse=("w1:p3", "w1:t2"))
-        self.assertIn("started in its tab «build» again", out)
+        self.assertIn("ran the start in its tab «build» again", out)
         self.assertNotIn(["tab", "create"], [r[:2] for r in self.ran])
         self.assertEqual(self.ran[0][:3], ["pane", "run", "w1:p3"])
         self.assertTrue(self.ran[0][3].startswith("cd ") and self.ran[0][3].endswith("&& a4sx launch --cell build"))
