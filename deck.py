@@ -235,7 +235,7 @@ def recorded_cwd(name, iid):
     return cwd if isinstance(cwd, str) and os.path.isabs(cwd) and os.path.isdir(cwd) else None
 
 
-def _pane_in_folder(cwd, skip_tab=None):
+def _pane_in_folder(cwd, skip_tab=None, skip_pane=None):
     """0.4.7 (cell01): a herdr pane that shows a bare shell prompt in `cwd` (its shell's own folder, /proc/<pid>/cwd)
     and has no agent: the cell's old tab when the deck has no record of it. (pane, tab), or None. Linux only."""
     if not cwd:
@@ -247,7 +247,7 @@ def _pane_in_folder(cwd, skip_tab=None):
     panes = (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
     for p in panes:
         pane, tab = p.get("pane_id"), p.get("tab_id")
-        if not isinstance(pane, str) or not tab or tab == skip_tab:
+        if not isinstance(pane, str) or not tab or tab == skip_tab or pane == skip_pane:
             continue
         pid = _idle_shell_pid(pane)
         try:
@@ -1048,14 +1048,15 @@ class Deck:
             cwd = (recorded_cwd(r["name"], r.get("iid")) if ok_name else None) or self.pdir(r["name"])
             argv = [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved]
 
-            def finish(use_there=None):
+            def finish(use_there=None, asked=False):
                 res = []
                 # 0.4.7 (cell01): a stop only for a cell that runs here now (a stale row gave "nothing was stopped")
                 if r["running"] and self.running_now(r["name"], r.get("iid")) is not None:
                     res += lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
                     time.sleep(2)
                 # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab
-                old = _leftover_pane(r["name"]) if ok_name else None
+                # (review: not after a question: the answer decides, "no" is a new tab)
+                old = _leftover_pane(r["name"]) if ok_name and not asked else None
                 if old and pane_is_idle_shell(old[0]):
                     return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=old)]
                 return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=use_there)]
@@ -1063,14 +1064,18 @@ class Deck:
             # 0.4.7: without the deck's record, an idle shell in that folder. It may be the person's own (their tab,
             # their exported variables): asked, never taken by itself, and asked BEFORE anything is stopped, so Esc
             # (or no answer) leaves a running cell running
-            there = _pane_in_folder(cwd, deck_state()[1]) if ok_name else None
+            # review: the deck's own record first: its idle pane is reused with no question, as in 0.4.6
+            rec = _leftover_pane(r["name"]) if ok_name else None
+            if rec and pane_is_idle_shell(rec[0]):
+                return finish()
+            there = _pane_in_folder(cwd, deck_state()[1], rec[0] if rec else None) if ok_name else None
             if there:
                 self.msg = ""
                 self.choose(f"a shell prompt is open in {cwd} (pane {there[0]}). Start «{r['name']}» in it? It keeps "
                             "that shell's environment; the start command is typed into it"
                             + (" (the cell is stopped first)" if r["running"] else ""),
                             ["no, open a new tab", "yes, start it in that shell"],
-                            lambda i: self.bg(f"{r['name']} ← «{saved}»", lambda: finish(there if i == 1 else None)))
+                            lambda i: self.bg(f"{r['name']} ← «{saved}»", lambda: finish(there if i == 1 else None, asked=True)))
                 return None
             return finish()
         self.bg(f"{r['name']} ← «{saved}»", work)
