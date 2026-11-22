@@ -479,7 +479,10 @@ def remember_running_panes(rows):
     """0.4.9 (cell01: two tabs «omarchy-cell», the restore took the other one): the pane a cell is SEEN running in is
     its tab from now on, as one the deck opened: a later restore of the stopped cell reuses that tab."""
     rec = _cell_panes()
-    want = {r["name"]: r["pane"] for r in rows if r.get("running") and r.get("pane") and CELL_NAME_RE.fullmatch(str(r.get("name") or ""))
+    # review: only a pane found by the launch's own process; a folder-name match can be another tab or a plain
+    # Claude Code session in ~/projects/<cell>, and a recorded pane is later reused with no question
+    want = {r["name"]: r["pane"] for r in rows if r.get("running") and r.get("pane") and r.get("pane_by") == "pid"
+            and CELL_NAME_RE.fullmatch(str(r.get("name") or ""))
             and (rec.get(r["name"]) or [None])[0] != r["pane"]}
     if not want:
         return
@@ -827,7 +830,7 @@ class Data:
 
         def row(name, iid, presence, own=None):
             m, c = owner.get(iid) or {}, local.get(iid)
-            pane = state = cwd = None
+            pane = state = cwd = by = None
             is_running = bool(c and (c.get("local") or {}).get("state") == "running")
             if is_running:
                 # cell01: only an agent whose folder is named after the cell. Never "the one agent here": that put the
@@ -837,14 +840,16 @@ class Data:
                 pp = pane_of_pid((c.get("local") or {}).get("pid"), agents,
                                  {p for p, n in taken_by.items() if p and n != name}) if IN_HERDR else None
                 a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
+                by = "pid" if a else None
                 if a is None:
                     a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+                    by = "folder" if a else None
                 if a:
                     pane, state, cwd = a.get("pane_id"), a.get("agent_status"), a.get("cwd")
-            elif c:   # 0.4.9 (cell01): a cell that doesn't run shows the folder its next start uses (a4sx's record)
+            elif c:   # 0.4.9 (cell01): a cell that doesn't run shows the folder its last session ran in (a4sx's record)
                 cwd = recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
             return {"name": name, "iid": iid, "presence": presence or "?", "owner": m.get("display_name") or "?", "mine": bool(own) if own is not None else (bool(m) and m is me),
-                    "role": m.get("role") or "", "here": bool(c), "running": is_running, "pane": pane, "state": state,
+                    "role": m.get("role") or "", "here": bool(c), "running": is_running, "pane": pane, "pane_by": by, "state": state,
                     "cwd": cwd, "cell": c or {}}
         for p in peers:
             seen.add(p.get("instance_id"))

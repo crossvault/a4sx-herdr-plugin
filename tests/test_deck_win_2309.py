@@ -651,14 +651,21 @@ class Deck049(unittest.TestCase):
         with mock.patch.object(deck, "_cell_panes", lambda: {"omarchy-cell": ["w1:pG", "w1:tG"]}), \
                 mock.patch.object(deck, "_remember_cell_pane", lambda c, p, t: saved.update({c: (p, t)})), \
                 mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1"}]}}):
-            deck.remember_running_panes([{"name": "omarchy-cell", "running": True, "pane": "w1:p1"},
+            deck.remember_running_panes([{"name": "omarchy-cell", "running": True, "pane": "w1:p1", "pane_by": "pid"},
                                          {"name": "other", "running": False, "pane": None}])
         self.assertEqual(saved, {"omarchy-cell": ("w1:p1", "w1:t1")})
 
     def test_nothing_is_asked_of_herdr_when_the_record_already_holds_the_pane(self):
         with mock.patch.object(deck, "_cell_panes", lambda: {"c": ["w1:p1", "w1:t1"]}), \
                 mock.patch.object(deck, "jrun", lambda *a, **k: self.fail("asked herdr")):
-            deck.remember_running_panes([{"name": "c", "running": True, "pane": "w1:p1"}])
+            deck.remember_running_panes([{"name": "c", "running": True, "pane": "w1:p1", "pane_by": "pid"}])
+
+    def test_a_pane_found_only_by_its_folder_name_is_never_recorded(self):
+        """Review of 99aaf57: the folder fallback can be another «cell» tab or a plain Claude Code session."""
+        with mock.patch.object(deck, "_cell_panes", lambda: {}), \
+                mock.patch.object(deck, "_remember_cell_pane", lambda *a: self.fail("recorded a folder-found pane")), \
+                mock.patch.object(deck, "jrun", lambda *a, **k: self.fail("asked herdr")):
+            deck.remember_running_panes([{"name": "omarchy-cell", "running": True, "pane": "w1:pG", "pane_by": "folder"}])
 
     def test_a_reused_tab_is_remembered_and_the_line_names_no_herdr_restart(self):
         saved = {}
