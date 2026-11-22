@@ -283,5 +283,51 @@ class Recheck045(unittest.TestCase):
             self.assertIn(os.getppid(), up)
 
 
+class Deck046(unittest.TestCase):
+    """0.4.6, a4sx #2309 (q) and (r) from cell01's move round trip."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_the_restore_list_is_newest_first_with_this_cells_saves_marked(self):
+        lib = [{"name": "old", "updated": "2026-11-20 10:00"}, {"name": "build-backup", "updated": "2026-11-22 09:00"},
+               {"name": "handoff-build", "updated": "2026-11-21 12:00"}, {"name": "other-backup", "updated": "2026-11-22 10:00"}]
+        self.assertEqual([x["name"] for x in deck.restore_order(lib, "build")],
+                         ["other-backup", "build-backup", "handoff-build", "old"])
+        self.assertTrue(deck.of_cell("build-backup", "build") and deck.of_cell("handoff-build", "build"))
+        self.assertFalse(deck.of_cell("builder-x", "build") or deck.of_cell("other-backup", "build"))
+        ui, _seen = _ui()
+        ui.d.library = [dict(x, vers="1", size="1k") for x in lib]
+        got = {}
+        ui.choose = lambda title, items, cb: got.update(items=items)
+        ui.restore({"name": "build"})
+        shown = [deck.ANSI.sub("", x) for x in got["items"]]
+        self.assertTrue(shown[0].startswith("  other-backup") and shown[1].startswith("◆ build-backup"))
+
+    def test_r_reuses_the_idle_old_tab_and_refuses_while_online_elsewhere(self):
+        ui, seen = _ui([_row("build", here=True)])
+        ui.bg = lambda title, fn: seen.update(lines=fn())
+        got = {}
+        with mock.patch.object(deck, "_leftover_pane", lambda c: ("w1:p4", "w1:t2")), \
+                mock.patch.object(deck, "pane_is_idle_shell", lambda p: True), \
+                mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
+            ui.start_seeded({"name": "build", "running": False}, "build-backup")
+        self.assertEqual(got["reuse"], ("w1:p4", "w1:t2"))
+        ui2, seen2 = _ui([_row("win-cell", here=True, presence="online")])
+        ui2.bg = lambda title, fn: seen2.update(lines=fn())
+        ui2.note = lambda lines, title="result": seen2.update(note=lines)
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("started")):
+            ui2.start_seeded({"name": "win-cell", "running": False}, "handoff-win-cell")
+        self.assertIn("is online on another host now", seen2["note"][0])
+
+    def test_a_cell_stored_here_and_running_elsewhere_says_so(self):
+        ui, _seen = _ui()
+        ui.d.ah = {"open": []}
+        where = deck.ANSI.sub("", ui.where({"pane": None, "here": True, "running": False, "mine": True, "presence": "online", "name": "w"}))
+        self.assertEqual(where, "● elsewhere now · stored here")
+        where = deck.ANSI.sub("", ui.where({"pane": None, "here": True, "running": False, "mine": True, "presence": "offline", "name": "w"}))
+        self.assertEqual(where, "◇ stored here")
+
+
 if __name__ == "__main__":
     unittest.main()

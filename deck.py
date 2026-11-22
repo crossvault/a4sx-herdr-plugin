@@ -239,6 +239,16 @@ def pane_is_empty_shell(pane):
     return sp is not None and _shell_children(sp) == []
 
 
+def of_cell(saved, cell):
+    """0.4.6 (q): a save of this cell, by the names the front ends give them (`<cell>-backup`, `handoff-<cell>`)."""
+    return bool(cell) and (saved.startswith(cell + "-") or saved == f"handoff-{cell}" or saved == cell)
+
+
+def restore_order(lib, cell):
+    """0.4.6 (q): newest first ("YYYY-MM-DD HH:MM" sorts as text)."""
+    return sorted(lib, key=lambda x: x.get("updated") or "", reverse=True)
+
+
 def _ancestors(pid, n=16):
     """pid and its parents, nearest first (Linux /proc), at most n; [] when they can't be read."""
     out, cur = [], pid
@@ -923,11 +933,13 @@ class Deck:
                  lambda i: i == 1 and self.note([new_tab("delete", os.path.expanduser("~"), [*A4SX_ARGV, "delete", name])])))] if here or True else []
 
     def restore(self, r):
-        lib = self.d.library
+        """0.4.6 (q), cell01: newest first, and this cell's own saves (`<cell>-…`, `handoff-<cell>`) marked."""
+        lib = restore_order(self.d.library, r["name"])
         if not lib:
             return self.note(["your library is empty, or this host is not signed in (a4sx login)"])
         self.choose(f"start {r['name']} from which saved conversation? (a new local session seeded from it)",
-                    [f"{x['name']:<34}{DIM}{x['updated']}  v{x['vers']}  {x['size']}{RS}" for x in lib],
+                    [f"{(f'{CYAN}◆{RS} ' if of_cell(x['name'], r['name']) else '  ')}{x['name']:<34}{DIM}{x['updated']}  v{x['vers']}  {x['size']}{RS}"
+                     for x in lib],
                     lambda i: self.start_seeded(r, lib[i]["name"]))
 
     def start_seeded(self, r, saved):
@@ -937,11 +949,17 @@ class Deck:
                 if now is not None:
                     return [f"«{r['name']}» is already running on this host" + (f", in pane {now}: g goes there" if now else "")
                             + "; nothing was started"]
+                if self.still_elsewhere(r["name"]):   # 0.4.6: as s and n (F6): nothing is started here
+                    return self.elsewhere_note(r["name"])
             res = []
             if r["running"]:
                 res += lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
                 time.sleep(2)
-            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved], cell=r["name"])]
+            # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab
+            old = _leftover_pane(r["name"]) if CELL_NAME_RE.fullmatch(str(r["name"])) else None
+            reuse = old if old and pane_is_idle_shell(old[0]) else None
+            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved],
+                                  cell=r["name"], reuse=reuse)]
         self.bg(f"{r['name']} ← «{saved}»", work)
 
     def takeover(self, saved):
@@ -993,6 +1011,8 @@ class Deck:
             return f"{CYAN}◆ here{RS} {MAG}VS Code{RS}"
         if r["running"]:
             return f"{CYAN}◆ here{RS} {DIM}{'no pane' if IN_HERDR else 'terminal'}{RS}"
+        if r["here"] and r.get("mine") and r.get("presence") == "online":   # 0.4.6 (r): runs on another host now
+            return f"{YEL}● elsewhere now{RS} {DIM}· stored here{RS}"
         return f"{CYAN}◇ stored here{RS}" if r["here"] else f"{DIM}elsewhere{RS}"
 
     def host_lines(self):

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.6 - 2026-11-22
+
+From cell01's move round trip (a4sx #2309 q, r):
+- **r (restore from a saved state)** lists the saved conversations newest first and marks this cell's own saves (`<cell>-backup`, `handoff-<cell>`) with ◆. When the cell's tab from before a herdr restart shows a bare shell prompt, it starts there instead of opening one more tab. It checks first that the cell isn't online on another host, as **s** and **n** do.
+- **A cell stored here that runs on another host** reads "● elsewhere now · stored here" instead of "◇ stored here" next to "● online".
+
 ## 0.4.5 - 2026-11-22
 
 From cell01's Omarchy recheck of 0.4.4 (a4sx #2309 F6, bb):
