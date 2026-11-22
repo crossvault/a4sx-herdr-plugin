@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.7 - 2026-11-22
+
+From cell01's Omarchy check of 0.4.6 (a4sx #2309 q, r):
+- **r on a cell whose tab isn't in ~/projects/<cell>** starts it in the folder its last session ran in, from a4sx's own record on this host, and reuses the bare shell prompt open in that folder. Before, it opened a new tab in a new folder ~/projects/<cell>, and Claude Code asked whether to trust that folder. If the record is missing, or its folder is gone, it uses ~/projects/<cell> as before.
+- **r on a stopped cell** runs no stop first. Before, the first result line was the CLI's "nothing was stopped", which read like an error.
+- **r on a cell that is online on another host** says so before the list of saved conversations, not after you pick one. The fresh check after the pick stays.
+- **The where column** reads "● runs elsewhere" for a cell stored here that runs on another host. Before, view 1 cut "● elsewhere now · stored here" short. The details still say "stored on <this host> too".
+
 ## 0.4.6 - 2026-11-22
 
 From cell01's move round trip (a4sx #2309 q, r):

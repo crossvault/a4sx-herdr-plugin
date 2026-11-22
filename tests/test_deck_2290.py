@@ -57,6 +57,8 @@ class Budget(unittest.TestCase):
     def test_it_reads_no_credential_file(self):
         with open(SRC, encoding="utf-8") as f:
             src = f.read()
+        # 0.4.7: the CLI's per-cell record of its last session's id and folder (no credential) is the one allowed name
+        src = src.replace('"cell-last-session.json"', '""')
         for bad in ("apikey", "session.json", ".credentials", "getpass", "Authorization"):
             self.assertNotIn(bad, src, bad)
         self.assertFalse(re.search(r"\.key[\"']", src))

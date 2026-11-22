@@ -207,6 +207,50 @@ def _leftover_pane(cell):
     return pane, tab
 
 
+#: 0.4.7: the CLI's per-cell record of its last session's id and folder (a4sx CELL_LAST_SESSION_FILE; no credential)
+CELL_LAST_FILE = "cell-last-session.json"
+
+
+def recorded_cwd(name, iid):
+    """0.4.7 (cell01): the folder this cell's last session ran in, from the CLI's own record on this host
+    (state/a4sx/agents/<name>/state, CELL_LAST_FILE, entry by instance id), when it is a folder here; else None.
+    A cell's tab isn't always in ~/projects/<cell>."""
+    if not CELL_NAME_RE.fullmatch(str(name or "")) or not isinstance(iid, str) or not iid:
+        return None
+    try:
+        with open(os.path.join(STATE, "a4sx", "agents", name, "state", CELL_LAST_FILE), encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return None
+    e = ((got.get("cells") if isinstance(got, dict) else None) or {}).get(iid) if isinstance(got, dict) else None
+    cwd = e.get("cwd") if isinstance(e, dict) else None
+    return cwd if isinstance(cwd, str) and os.path.isabs(cwd) and os.path.isdir(cwd) else None
+
+
+def _pane_in_folder(cwd, skip_tab=None):
+    """0.4.7 (cell01): a herdr pane that shows a bare shell prompt in `cwd` (its shell's own folder, /proc/<pid>/cwd)
+    and has no agent: the cell's old tab when the deck has no record of it. (pane, tab), or None. Linux only."""
+    if not cwd:
+        return None
+    try:
+        want = os.path.realpath(cwd)
+    except OSError:
+        return None
+    panes = (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
+    for p in panes:
+        pane, tab = p.get("pane_id"), p.get("tab_id")
+        if not isinstance(pane, str) or not tab or tab == skip_tab:
+            continue
+        pid = _idle_shell_pid(pane)
+        try:
+            here = os.path.realpath(os.readlink(f"/proc/{int(pid)}/cwd")) if pid else None
+        except (OSError, ValueError):
+            here = None
+        if here == want and not _pane_has_agent(pane):
+            return pane, tab
+    return None
+
+
 #: the shells whose bare prompt counts as idle (process-info's foreground process name)
 IDLE_SHELLS = ("bash", "zsh", "fish", "sh")
 
@@ -375,6 +419,8 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
         # review: fish reads \\ and \' inside single quotes, so shlex's quoting isn't safe there; nothing is typed
         return f"a backslash or line break in the folder or the command can't be typed into herdr's shell safely, so nothing was started: {shown}"
     old = _leftover_pane(cell) if (cell and reuse) else None
+    if reuse and not (old and tuple(old) == tuple(reuse)):   # 0.4.7: or the idle shell in the cell's own folder
+        old = _pane_in_folder(cwd)
     if old and tuple(old) == tuple(reuse):
         pane, tab = old
         # follow-up (c): a half-typed line would prefix the start line; ctrl+u clears it, sent only when herdr's
@@ -959,6 +1005,8 @@ class Deck:
 
     def restore(self, r):
         """0.4.6 (q), cell01: newest first, and this cell's own saves (`<cell>-…`, `handoff-<cell>`) marked."""
+        if not r.get("running") and runs_elsewhere(r):   # 0.4.7 (cell01): said before the picker, not after it
+            return self.note(self.elsewhere_lines(r["name"], "started here from a saved conversation", "start it here"), r["name"])
         lib = restore_order(self.d.library, r["name"])
         if not lib:
             return self.note(["your library is empty, or this host is not signed in (a4sx login)"])
@@ -988,13 +1036,18 @@ class Deck:
                 if self.still_elsewhere(r["name"]):   # 0.4.6: as s and n (F6): nothing is started here
                     return self.elsewhere_lines(r["name"], "started here from a saved conversation", "start it here")
             res = []
-            if r["running"]:
+            # 0.4.7 (cell01): a stop only for a cell that runs here now (a stale row gave "nothing was stopped")
+            if r["running"] and self.running_now(r["name"], r.get("iid")) is not None:
                 res += lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
                 time.sleep(2)
-            # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab
-            old = _leftover_pane(r["name"]) if CELL_NAME_RE.fullmatch(str(r["name"])) else None
-            reuse = old if old and pane_is_idle_shell(old[0]) else None
-            return res + [new_tab(r["name"], self.pdir(r["name"]), [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved],
+            ok_name = CELL_NAME_RE.fullmatch(str(r["name"]))
+            # 0.4.7 (cell01): the folder its last session ran in (the CLI's record), not always ~/projects/<cell>
+            cwd = (recorded_cwd(r["name"], r.get("iid")) if ok_name else None) or self.pdir(r["name"])
+            # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab;
+            # 0.4.7: or, without the deck's record, the idle shell in that folder
+            old = _leftover_pane(r["name"]) if ok_name else None
+            reuse = old if old and pane_is_idle_shell(old[0]) else (_pane_in_folder(cwd, deck_state()[1]) if ok_name else None)
+            return res + [new_tab(r["name"], cwd, [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved],
                                   cell=r["name"], reuse=reuse)]
         self.bg(f"{r['name']} ← «{saved}»", work)
 
@@ -1048,7 +1101,7 @@ class Deck:
         if r["running"]:
             return f"{CYAN}◆ here{RS} {DIM}{'no pane' if IN_HERDR else 'terminal'}{RS}"
         if runs_elsewhere(r):   # 0.4.6 (r): runs on another host now
-            return f"{YEL}● elsewhere now{RS} {DIM}· stored here{RS}"
+            return f"{YEL}● runs elsewhere{RS}"   # 0.4.7 (cell01): fits the 17-wide column; details say "stored here too"
         return f"{CYAN}◇ stored here{RS}" if r["here"] else f"{DIM}elsewhere{RS}"
 
     def host_lines(self):
