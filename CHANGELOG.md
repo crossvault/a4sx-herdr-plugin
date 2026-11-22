@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 - 2026-11-22
+
+- S's note for an a4sx without `agent-host stop` names the version that has it: a4sx 0.59.10 (the number #2326 got at its merge; it said 0.59.15). Only the text changed: the check stays a probe of `agent-host stop --help`, not a version compare.
+
 ## 0.4.2 - 2026-11-21
 
 Follow-ups from cell01's Omarchy recheck (herdr 0.9.5, a4sx #2309):
@@ -26,7 +30,7 @@ From cell01's round trip with a real Claude Code (a4sx #2309):
 - **herdr 0.9.5 or newer** is needed now (the deck's start hook). On herdr 0.9.1, keep plugin 0.3.3.
 - If you installed cell01's standalone `a4sx.deck` plugin, uninstall it: both would open a deck at start. The `on-start` file now lives in the `a4sx.mesh` config folder. It never reads or shows a key or a sign-in.
 - New actions: `deck` (open the deck) and `deck-label` (the cells' names in the agents list).
-- This host (view 4): while the agent host runs, **S** stops it with `a4sx agent-host stop`, the same stop as Ctrl-C in its tab (VS Code is told first, then the cells it started end). It asks first, naming the cells and counting the plain conversations open in it (read fresh); with none it stops at once. This needs a4sx 0.59.15 or newer: with an older a4sx, S asks nothing and stops nothing, and says to run `a4sx update` or to use Ctrl-C in the host's tab.
+- This host (view 4): while the agent host runs, **S** stops it with `a4sx agent-host stop`, the same stop as Ctrl-C in its tab (VS Code is told first, then the cells it started end). It asks first, naming the cells and counting the plain conversations open in it (read fresh); with none it stops at once. This needs a4sx 0.59.10 or newer: with an older a4sx, S asks nothing and stops nothing, and says to run `a4sx update` or to use Ctrl-C in the host's tab.
 - From cell01's bring-up on Omarchy: a cell's name goes only on the pane of an agent whose folder is named after the cell, never on "the one agent in this herdr session" (it had named a plain Claude Code pane after a cell). **open** now really brings the deck to the front (herdr 0.9.5 needs `tab focus` after opening the pane).
 - After a herdr restart a cell's old pane stays as an empty shell. **s** and **n** now offer to start the cell there again. They offer it only for the pane the deck last started that cell in, still in the same tab, with no agent in it. Herdr can't tell an empty shell prompt from vim or ssh running there, so the deck asks first; the first answer, **no, open a new tab**, opens a new tab as before. Everything typed into a shell is quoted, a cell name has to follow a4sx's rule (also for **bring**), and a folder or command with a backslash or line break is refused rather than typed.
 - Moving a cell (view 5): **bring here** starts one of your cells that runs elsewhere on this host, signed in; **Start from a saved session** starts a cell here seeded from a saved conversation. There is no hand-off yet: the conversation follows a moved cell once a4sx #2292 lands (an exact copy; a scrubbed one would change its peers' names).

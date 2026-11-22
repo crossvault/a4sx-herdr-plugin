@@ -152,7 +152,7 @@ class StopHost(unittest.TestCase):
             ops["S"][1]()
         self.assertEqual(ran, [["stop", "--help"]], "only the side-effect-free probe")
         self.assertEqual(seen["lines"], [deck.STOP_NEEDS_UPDATE])
-        self.assertIn("needs a4sx 0.59.15 or newer", deck.STOP_NEEDS_UPDATE)
+        self.assertIn("needs a4sx 0.59.10 or newer", deck.STOP_NEEDS_UPDATE)
 
     def test_stopped_offers_start_not_stop(self):
         _ui, ops = self._ops(False)

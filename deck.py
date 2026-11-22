@@ -67,7 +67,7 @@ RS, B = "\033[0m", "\033[1m"
 FG, DIM, FAINT = rgb("#c0caf5"), rgb("#6b7399"), rgb("#4a5380")
 BLUE, CYAN, GREEN, YEL, RED, MAG, ORANGE = (rgb(x) for x in ("#7aa2f7", "#7dcfff", "#9ece6a", "#e0af68", "#f7768e", "#bb9af7", "#ff9e64"))
 SELBG, PILL = bgc("#2a3050"), bgc("#7aa2f7") + rgb("#15161e")
-STOP_NEEDS_UPDATE = ("this a4sx can't stop the agent host from here (that needs a4sx 0.59.15 or newer): run `a4sx update`, "
+STOP_NEEDS_UPDATE = ("this a4sx can't stop the agent host from here (that needs a4sx 0.59.10 or newer): run `a4sx update`, "
                      "or stop it with Ctrl-C in its tab; nothing was stopped")
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -946,7 +946,7 @@ class Deck:
         ops = []
         if not ah["running"]:
             ops.append(("A", "start the agent host (serves VS Code)", lambda: self.note([new_tab("agent host", os.path.expanduser("~"), [*A4SX_ARGV, "agent-host"])])))
-        else:   # a4sx #2326 (CLI 0.59.15): the same stop as Ctrl-C in its tab; an older a4sx says so in its own words
+        else:   # a4sx #2326 (CLI 0.59.10): the same stop as Ctrl-C in its tab; an older a4sx says so in its own words
             ops.append(("S", "stop the agent host … (as Ctrl-C in its tab: VS Code is told first)", self.stop_host))
         if IN_HERDR:
             ops.append(("L", "close the cells' leftover tabs (bare shell prompts only) …", self.close_leftovers))
@@ -1069,7 +1069,7 @@ class Deck:
                              "this view shows when it has, and Ctrl-C in its tab stops it at once"]
                 return lines
             self.bg("stop the agent host", work)
-        # coordinator: an a4sx before 0.59.15 has no `agent-host stop`: asked without side effects (its --help), and
+        # coordinator: an a4sx before 0.59.10 has no `agent-host stop`: asked without side effects (its --help), and
         # then nothing is asked or stopped, only said
         rc, _out, err = run([*A4SX_ARGV, "agent-host", "stop", "--help"], 20)
         if rc:
