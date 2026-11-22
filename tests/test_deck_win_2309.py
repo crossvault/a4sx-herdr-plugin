@@ -12,17 +12,32 @@ deck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deck)
 
 
-def _ui(rows=(), cells=(), at="12:00:00"):
+def _ui(rows=(), cells=(), at="12:00:00", peers=None):
+    """A deck with these rows. `peers`: what a fresh `mesh peers --json` says now (None: the rows' own presence)."""
     ui = object.__new__(deck.Deck)
-    ui.d = types.SimpleNamespace(lock=threading.Lock(), rows=list(rows), cells=list(cells), at=at)
+    ui.d = types.SimpleNamespace(lock=threading.Lock(), rows=list(rows), cells=list(cells), at=at, ref="msh_x",
+                                 seen_limit=0, slow_until=0)
     seen = {}
     ui.note = lambda lines, title="result": seen.update(lines=lines, title=title)
     ui.pdir = lambda n: os.path.join("/nonexistent-deck-test", n)
+    ui.running_now = lambda name, iid=None: None
+    fresh = peers if peers is not None else [{"name": r["name"], "presence": r["presence"]} for r in rows]
+
+    def jrun(argv, t=30):
+        return {"peers": fresh} if argv[-3:-1] == ["peers", "msh_x"] else {}
+    for p in (mock.patch.object(deck, "jrun", jrun),
+              mock.patch.object(deck.threading, "Thread", lambda target, daemon: types.SimpleNamespace(start=target))):
+        p.start()
+        ui.__dict__.setdefault("_patches", []).append(p)
     return ui, seen
 
 
-def _row(name, here=False, mine=True, presence="offline"):
-    return {"name": name, "here": here, "mine": mine, "presence": presence}
+def tearDownModule():
+    mock.patch.stopall()
+
+
+def _row(name, here=False, mine=True, presence="offline", running=False):
+    return {"name": name, "here": here, "mine": mine, "presence": presence, "running": running}
 
 
 class BringOnlineElsewhere(unittest.TestCase):
@@ -38,9 +53,12 @@ class BringOnlineElsewhere(unittest.TestCase):
                                            "it there first (on that host's deck: x stops it), then bring it here")
         self.assertIn("nothing was created or started", seen["lines"][1])
 
+    def tearDown(self):
+        mock.patch.stopall()
+
     def test_offline_elsewhere_or_unknown_starts_as_before(self):
         for rows in ([_row("build")], [], [_row("build", presence="online", mine=False)],
-                     [_row("build", here=True, presence="online")]):
+                     [_row("build", here=True, presence="online", running=True)]):
             ui, seen = _ui(rows)
             with mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: f"tab {argv[-1]}"):
                 ui.bring("build", False)
@@ -72,6 +90,16 @@ class FirstCell(unittest.TestCase):
         self.assertEqual(got["cwd"], os.path.join("/nonexistent-deck-test", "studio"))
         self.assertEqual(got["argv"][-2:], ["launch", "--cell"])
         self.assertEqual(seen["lines"], ["opened"])
+        self.assertEqual(got.get("label", "studio"), "studio")
+
+    def test_the_tab_is_named_like_the_folder(self):
+        ui, seen = _ui()
+        asked, got = {}, {}
+        ui.ask = lambda title, cb, empty_ok=False: asked.update(cb=cb)
+        ui.first_cell()
+        with mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(label=label) or "ok"):
+            asked["cb"]("first-cell")
+        self.assertEqual(got["label"], "first-cell", "0.4.5 (cell01): not «first cell»")
 
     def test_a_bad_folder_name_starts_nothing(self):
         ui, seen = _ui()
@@ -84,8 +112,6 @@ class FirstCell(unittest.TestCase):
                 self.assertIn("nothing was started", seen["lines"][0])
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class FirstCellOnScreen(unittest.TestCase):
@@ -118,3 +144,144 @@ class FirstCellOnScreen(unittest.TestCase):
                                             "role": "", "state": "", "running": False, "pane": None, "cwd": None}]}):
             ui, screen = self._draw("mesh", **kw)
             self.assertNotIn("No cell on this host yet", screen, kw)
+
+
+class Recheck045(unittest.TestCase):
+    """0.4.5, cell01's Omarchy recheck of 0.4.4."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+        deck._PANE_OF_PID.clear()
+        deck._SHELL_OF_PANE.clear()
+
+    def test_stored_here_and_online_elsewhere_is_refused_by_s_and_n(self):
+        ui, seen = _ui([_row("win-cell", here=True, presence="online")])
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("a tab was opened or reused")):
+            ui.bring("win-cell", False)
+        self.assertIn("is online on another host now", seen["lines"][0])
+        seen.clear()
+        ui._start_cell = lambda name, argv: self.fail("started in its old tab")
+        ui.msg = ""
+        ui.start_cell("win-cell", ["a4sx", "launch", "--cell", "win-cell"])
+        self.assertIn("is online on another host now", seen["lines"][0])
+
+    def test_a_stale_online_is_read_again_and_a_restart_here_goes_on(self):
+        """Review of #9: stopped here a moment ago, the deck's presence (60 s old) still says online; the fresh read
+        doesn't, so s starts it."""
+        ui, seen = _ui([_row("build", here=True, presence="online")], peers=[{"name": "build", "presence": "offline"}])
+        started = []
+        ui._start_cell = lambda name, argv: started.append(name)
+        ui.msg = ""
+        ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+        self.assertEqual(started, ["build"])
+        self.assertNotIn("lines", seen)
+
+    def test_no_fresh_read_possible_refuses_nothing(self):
+        ui, seen = _ui([_row("build", here=True, presence="online")])
+        ui.d.slow_until = deck.time.time() + 60   # the server said slow down
+        started = []
+        ui._start_cell = lambda name, argv: started.append(name)
+        ui.msg = ""
+        ui.start_cell("build", ["a4sx", "launch", "--cell", "build"])
+        self.assertEqual(started, ["build"], "the CLI decides in the tab, as before")
+
+    def test_running_here_is_not_elsewhere(self):
+        ui, _seen = _ui([_row("build", here=True, presence="online", running=True)])
+        self.assertIsNone(ui.online_elsewhere("build"))
+
+    def test_the_result_lines_claim_no_start(self):
+        with open(os.path.join(HERE, "..", "deck.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn('return f"started in its tab', src)
+        self.assertIn("the tab shows the outcome", src)
+
+    def test_messages_are_read_for_peers_stored_here_too(self):
+        ui = object.__new__(deck.Data)
+        asked = []
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: asked.append(argv[argv.index("deliveries") + 1]) or {}):
+            ui.load_activity("m", [{"name": "omarchy-cell", "iid": "ins_A", "here": True, "running": True, "presence": "online"},
+                                   {"name": "win-cell", "iid": "ins_B", "here": True, "running": False, "presence": "online"},
+                                   {"name": "far", "iid": "ins_C", "here": False, "running": False, "presence": "online"}])
+        self.assertEqual(asked, ["ins_C", "ins_B"], "remote peers first, then the ones stored here too")
+
+    def test_a_cell_is_found_in_the_pane_its_launch_runs_in(self):
+        agents = [{"pane_id": "w1:p2", "cwd": "/home/me/elsewhere"}, {"pane_id": "w1:p3", "cwd": "/home/me/proj"}]
+        info = {"w1:p2": 111, "w1:p3": 222}
+        calls = []
+
+        def jrun(argv, t=30):
+            calls.append(argv[-1])
+            return {"result": {"process_info": {"shell_pid": info[argv[-1]]}}}
+        with mock.patch.object(deck, "jrun", jrun), mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 500, 222, 1]), \
+                mock.patch.object(deck, "_in_foreground", lambda pid, pane: True):
+            self.assertEqual(deck.pane_of_pid(4242, agents), "w1:p3")
+            self.assertEqual(deck.pane_of_pid(4242, agents), "w1:p3")
+            self.assertEqual(deck.pane_of_pid(4343, agents), "w1:p3")
+        self.assertEqual(sorted(calls), ["w1:p2", "w1:p3"], "each pane's shell is asked once")
+        self.assertIsNone(deck.pane_of_pid(None, agents))
+
+    def test_a_miss_is_cached_until_the_panes_change(self):
+        agents = [{"pane_id": "w1:p2"}]
+        calls = []
+
+        def jrun(argv, t=30):
+            calls.append(argv[-1])
+            return {"result": {"process_info": {"shell_pid": 111}}}
+        with mock.patch.object(deck, "jrun", jrun), mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 900]):
+            for _ in range(5):   # an agent-host cell: in no pane
+                self.assertIsNone(deck.pane_of_pid(4242, agents))
+            self.assertEqual(calls, ["w1:p2"])
+            self.assertIsNone(deck.pane_of_pid(4242, agents + [{"pane_id": "w1:p9"}]))
+        self.assertEqual(calls, ["w1:p2", "w1:p9"], "a new pane: only it is asked")
+
+    def test_the_nearest_ancestor_wins_and_a_taken_one_gives_none(self):
+        """Review of #9: launched from another agent's pane (its Bash tool), the chain passes that pane's shell too."""
+        agents = [{"pane_id": "w1:outer"}, {"pane_id": "w1:inner"}]
+        info = {"w1:outer": 300, "w1:inner": 200}
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"process_info": {"shell_pid": info[argv[-1]]}}}), \
+                mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 200, 250, 300]), \
+                mock.patch.object(deck, "_in_foreground", lambda pid, pane: True):
+            self.assertEqual(deck.pane_of_pid(4242, agents), "w1:inner")
+            deck._PANE_OF_PID.clear()
+            self.assertIsNone(deck.pane_of_pid(4242, agents, taken={"w1:inner"}), "never the pane further up")
+            deck._PANE_OF_PID.clear()
+            self.assertIsNone(deck.pane_of_pid(4242, agents, taken={"w1:inner", "w1:outer"}))
+
+    def test_a_descendant_outside_the_panes_foreground_is_not_its_cell(self):
+        """Review of #9: an agent host started in a Claude pane runs its cells in other process groups."""
+        agents = [{"pane_id": "w1:p1"}]
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"process_info": {"shell_pid": 200, "foreground_process_group_id": 999}}}), \
+                mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 300, 200]), \
+                mock.patch.object(deck.os, "getpgid", lambda pid: 4242):
+            self.assertIsNone(deck.pane_of_pid(4242, agents))
+        deck._PANE_OF_PID.clear()
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"process_info": {"shell_pid": 200, "foreground_process_group_id": 4242}}}), \
+                mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 200]), \
+                mock.patch.object(deck.os, "getpgid", lambda pid: 4242):
+            self.assertEqual(deck.pane_of_pid(4242, agents), "w1:p1")
+
+    def test_a_failed_process_info_is_asked_again(self):
+        answers = iter([{}, {"result": {"process_info": {"shell_pid": 7}}}])
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: next(answers)):
+            self.assertIsNone(deck._shell_pid_of("w1:p1"))
+            self.assertEqual(deck._shell_pid_of("w1:p1"), 7)
+
+    def test_bring_running_here_says_so_and_a_second_press_does_nothing(self):
+        ui, seen = _ui([_row("build", here=True, presence="online", running=True)])
+        ui.running_now = lambda name, iid=None: "w1:p4"
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("a tab")):
+            ui.bring("build", False)
+        self.assertIn("is already running on this host", seen["lines"][0])
+        ui.starting = {"other"}
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("a second tab")):
+            ui.bring("other", False)
+
+    def test_ancestors_of_this_process_include_it(self):
+        up = deck._ancestors(os.getpid())
+        if up:   # Linux /proc
+            self.assertIn(os.getpid(), up)
+            self.assertIn(os.getppid(), up)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,6 +1,6 @@
 id = "a4sx.mesh"
 name = "a4sx mesh"
-version = "0.4.4"
+version = "0.4.5"
 min_herdr_version = "0.9.5"   # 0.4.0: the deck's [[startup]] hook and tab pane were seen working on 0.9.5
 description = "Start a4sx cells in panes, show mesh peers, join a mesh from an invitation; the deck: the mesh, its cells and your library in one pane"
 platforms = ["linux"]
