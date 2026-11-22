@@ -296,6 +296,8 @@ class Deck046(unittest.TestCase):
                          ["other-backup", "build-backup", "handoff-build", "old"])
         self.assertTrue(deck.of_cell("build-backup", "build") and deck.of_cell("handoff-build", "build"))
         self.assertFalse(deck.of_cell("builder-x", "build") or deck.of_cell("other-backup", "build"))
+        # review: exact names only: another cell's backup or a save named build-notes is not marked
+        self.assertFalse(deck.of_cell("build-x-backup", "build") or deck.of_cell("build-notes", "build"))
         ui, _seen = _ui()
         ui.d.library = [dict(x, vers="1", size="1k") for x in lib]
         got = {}
@@ -313,12 +315,33 @@ class Deck046(unittest.TestCase):
                 mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(reuse=reuse) or "ok"):
             ui.start_seeded({"name": "build", "running": False}, "build-backup")
         self.assertEqual(got["reuse"], ("w1:p4", "w1:t2"))
-        ui2, seen2 = _ui([_row("win-cell", here=True, presence="online")])
-        ui2.bg = lambda title, fn: seen2.update(lines=fn())
-        ui2.note = lambda lines, title="result": seen2.update(note=lines)
+        # review: the real bg() path, as the deck runs it: the refusal is what the result pane shows last, never "None"
+        ui2, _seen2 = _ui([_row("win-cell", here=True, presence="online")])
+        ui2.d.refresh = lambda what: None
+        notes = []
+        ui2.note = lambda lines, title="result": notes.append(list(lines))
         with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("started")):
             ui2.start_seeded({"name": "win-cell", "running": False}, "handoff-win-cell")
-        self.assertIn("is online on another host now", seen2["note"][0])
+        self.assertEqual(len(notes), 1, notes)
+        self.assertIn("is online on another host now", notes[-1][0])
+        self.assertIn("can't be started here from a saved conversation yet", notes[-1][0])
+        self.assertNotIn("None", notes[-1])
+        self.assertEqual(ui2.starting, set())   # the double-press guard is released after the check
+
+    def test_r_second_enter_while_checking_starts_nothing_more(self):
+        ui, _seen = _ui([_row("build", here=True)])
+        ui.d.refresh = lambda what: None
+        ui.starting = {"build"}   # a first Enter is still being checked
+        ui.bg = lambda title, fn: self.fail("a second start was run")
+        ui.start_seeded({"name": "build", "running": False}, "build-backup")
+
+    def test_bg_keeps_a_note_the_operation_showed_itself(self):
+        ui, _seen = _ui()
+        ui.d.refresh = lambda what: None
+        notes = []
+        ui.note = lambda lines, title="result": notes.append(list(lines))
+        ui.bg("x", lambda: ui.note(["own note"]))
+        self.assertEqual(notes, [["own note"]])
 
     def test_a_cell_stored_here_and_running_elsewhere_says_so(self):
         ui, _seen = _ui()

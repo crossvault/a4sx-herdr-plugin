@@ -246,7 +246,7 @@ def runs_elsewhere(r):
 
 def of_cell(saved, cell):
     """0.4.6 (q): a save of this cell, by the names the front ends give them (`<cell>-backup`, `handoff-<cell>`)."""
-    return bool(cell) and (saved.startswith(cell + "-") or saved == f"handoff-{cell}" or saved == cell)
+    return bool(cell) and saved in (f"{cell}-backup", f"handoff-{cell}", cell)   # review: exact names, not a prefix
 
 
 def own_messages(d, cell, n=12):
@@ -763,7 +763,10 @@ class Data:
         if IN_HERDR and server_due:
             label_panes(rows, cells, clear=agents_ok)
         self.n += 1
-        if ref and (force or now - self.t_act >= T_SERVER):   # local delivery records, no server request
+        if not ref:   # review: no mesh, no records to read: the panel says "none yet", not "reading …" forever
+            with self.lock:
+                self.activity_read = True
+        elif force or now - self.t_act >= T_SERVER:   # local delivery records, no server request
             self.t_act = now
             act = self.load_activity(ref, rows)
             with self.lock:
@@ -827,7 +830,8 @@ class Deck:
             self.busy, self.msg = True, title + " …"
             try:
                 res = fn()
-                self.note(res if isinstance(res, list) else [str(res)], title)
+                if res is not None:   # review: an operation that showed its own note keeps it (no "None")
+                    self.note(res if isinstance(res, list) else [str(res)], title)
             except Exception as e:   # noqa: BLE001 -- a prototype: say it, keep the screen
                 self.msg = f"{title}: {e!r}"
             self.busy = False
@@ -964,14 +968,25 @@ class Deck:
                     lambda i: self.start_seeded(r, lib[i]["name"]))
 
     def start_seeded(self, r, saved):
+        pending = self.__dict__.setdefault("starting", set())
+        if r["name"] in pending:   # review: a second Enter while the first start is checked starts nothing more
+            return
+        pending.add(r["name"])
+
         def work():
+            try:
+                return seeded()
+            finally:
+                pending.discard(r["name"])
+
+        def seeded():
             if not r["running"]:   # cell01: it may have started since the last refresh (herdr restores cells)
                 now = self.running_now(r["name"], r.get("iid"))
                 if now is not None:
                     return [f"«{r['name']}» is already running on this host" + (f", in pane {now}: g goes there" if now else "")
                             + "; nothing was started"]
                 if self.still_elsewhere(r["name"]):   # 0.4.6: as s and n (F6): nothing is started here
-                    return self.elsewhere_note(r["name"])
+                    return self.elsewhere_lines(r["name"], "started here from a saved conversation", "start it here")
             res = []
             if r["running"]:
                 res += lines_of(run([*A4SX_ARGV, "mesh", "cell", "stop", r["name"]]))[-1:]
@@ -1267,10 +1282,13 @@ class Deck:
         return any((p.get("instance_id") == iid if iid else p.get("name") == name) and p.get("presence") == "online"
                    for p in got.get("peers") or [])
 
+    def elsewhere_lines(self, name, cant="brought here", then="bring it here"):
+        return [f"«{name}» is online on another host now, so it can't be {cant} yet: stop it there "
+                f"first (on that host's deck: x stops it), then {then}",
+                f"{DIM}nothing was created or started; . reads the mesh again{RS}"]
+
     def elsewhere_note(self, name):
-        return self.note([f"«{name}» is online on another host now, so it can't be brought here yet: stop it there "
-                          "first (on that host's deck: x stops it), then bring it here",
-                          f"{DIM}nothing was created or started; . reads the mesh again{RS}"], name)
+        self.note(self.elsewhere_lines(name), name)
 
     def bring(self, name, with_handoff):
         """Start a cell that is stored on another computer here: with the person's sign-in the server moves it. F6: a
