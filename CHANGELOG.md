@@ -7,7 +7,7 @@ From cell01's Omarchy recheck of 0.4.4 (a4sx #2309 F6, bb):
 - **No claimed start.** The result line says "ran the start in its tab «cell» again (… the tab shows the outcome)" or "opened the tab «cell» (it shows the outcome)", because the CLI in the tab may still refuse.
 - **The first cell's tab** is named after the folder you type, not «first cell».
 - **Messages of this host's cells** are read for every peer that doesn't run here. Remote peers come first. Before, a peer also stored here was left out, so the panel said "no messages recorded on this host yet" while `a4sx mesh deliveries` listed hundreds.
-- **A running cell whose folder isn't named after it** is found in the herdr pane its launch runs in: the agent pane whose shell is the nearest of the launch's parent processes. It never takes a pane that another cell has by its folder name. herdr `pane process-info` is asked once per pane, and a cell's answer, including "none", is kept until the panes change. Before, it read "here, no pane".
+- **A running cell whose folder isn't named after it** is found in the herdr pane its launch runs in: the agent pane whose shell is the nearest of the launch's parent processes. It never takes a pane that another cell has by its folder name, and the launch must be that pane's foreground job, so an agent host started in a Claude Code pane doesn't give its cells that pane. herdr `pane process-info` is asked once per pane, and a cell's answer, including "none", is kept until the panes change. Before, it read "here, no pane".
 
 ## 0.4.4 - 2026-11-22
 

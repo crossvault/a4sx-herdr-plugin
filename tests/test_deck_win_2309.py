@@ -212,7 +212,8 @@ class Recheck045(unittest.TestCase):
         def jrun(argv, t=30):
             calls.append(argv[-1])
             return {"result": {"process_info": {"shell_pid": info[argv[-1]]}}}
-        with mock.patch.object(deck, "jrun", jrun), mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 500, 222, 1]):
+        with mock.patch.object(deck, "jrun", jrun), mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 500, 222, 1]), \
+                mock.patch.object(deck, "_in_foreground", lambda pid, pane: True):
             self.assertEqual(deck.pane_of_pid(4242, agents), "w1:p3")
             self.assertEqual(deck.pane_of_pid(4242, agents), "w1:p3")
             self.assertEqual(deck.pane_of_pid(4343, agents), "w1:p3")
@@ -238,12 +239,42 @@ class Recheck045(unittest.TestCase):
         agents = [{"pane_id": "w1:outer"}, {"pane_id": "w1:inner"}]
         info = {"w1:outer": 300, "w1:inner": 200}
         with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"process_info": {"shell_pid": info[argv[-1]]}}}), \
-                mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 200, 250, 300]):
+                mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 200, 250, 300]), \
+                mock.patch.object(deck, "_in_foreground", lambda pid, pane: True):
             self.assertEqual(deck.pane_of_pid(4242, agents), "w1:inner")
             deck._PANE_OF_PID.clear()
             self.assertIsNone(deck.pane_of_pid(4242, agents, taken={"w1:inner"}), "never the pane further up")
             deck._PANE_OF_PID.clear()
             self.assertIsNone(deck.pane_of_pid(4242, agents, taken={"w1:inner", "w1:outer"}))
+
+    def test_a_descendant_outside_the_panes_foreground_is_not_its_cell(self):
+        """Review of #9: an agent host started in a Claude pane runs its cells in other process groups."""
+        agents = [{"pane_id": "w1:p1"}]
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"process_info": {"shell_pid": 200, "foreground_process_group_id": 999}}}), \
+                mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 300, 200]), \
+                mock.patch.object(deck.os, "getpgid", lambda pid: 4242):
+            self.assertIsNone(deck.pane_of_pid(4242, agents))
+        deck._PANE_OF_PID.clear()
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"process_info": {"shell_pid": 200, "foreground_process_group_id": 4242}}}), \
+                mock.patch.object(deck, "_ancestors", lambda pid, n=16: [pid, 200]), \
+                mock.patch.object(deck.os, "getpgid", lambda pid: 4242):
+            self.assertEqual(deck.pane_of_pid(4242, agents), "w1:p1")
+
+    def test_a_failed_process_info_is_asked_again(self):
+        answers = iter([{}, {"result": {"process_info": {"shell_pid": 7}}}])
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: next(answers)):
+            self.assertIsNone(deck._shell_pid_of("w1:p1"))
+            self.assertEqual(deck._shell_pid_of("w1:p1"), 7)
+
+    def test_bring_running_here_says_so_and_a_second_press_does_nothing(self):
+        ui, seen = _ui([_row("build", here=True, presence="online", running=True)])
+        ui.running_now = lambda name, iid=None: "w1:p4"
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("a tab")):
+            ui.bring("build", False)
+        self.assertIn("is already running on this host", seen["lines"][0])
+        ui.starting = {"other"}
+        with mock.patch.object(deck, "new_tab", lambda *a, **k: self.fail("a second tab")):
+            ui.bring("other", False)
 
     def test_ancestors_of_this_process_include_it(self):
         up = deck._ancestors(os.getpid())

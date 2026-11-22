@@ -260,12 +260,28 @@ _SHELL_OF_PANE: dict = {}
 _PANE_OF_PID: dict = {}
 
 
+def _process_info(pane):
+    info = (jrun([HERDR, "pane", "process-info", "--pane", pane], 8).get("result") or {}).get("process_info")
+    return info if isinstance(info, dict) else {}
+
+
 def _shell_pid_of(pane):
+    """The pane's shell pid, asked once per pane (review: a failed answer is not kept, so it is asked again)."""
     if pane not in _SHELL_OF_PANE:
-        info = (jrun([HERDR, "pane", "process-info", "--pane", pane], 8).get("result") or {}).get("process_info")
-        sp = info.get("shell_pid") if isinstance(info, dict) else None
-        _SHELL_OF_PANE[pane] = sp if isinstance(sp, int) and not isinstance(sp, bool) else None
+        sp = _process_info(pane).get("shell_pid")
+        if not isinstance(sp, int) or isinstance(sp, bool):
+            return None
+        _SHELL_OF_PANE[pane] = sp
     return _SHELL_OF_PANE[pane]
+
+
+def _in_foreground(pid, pane):
+    """Review of #9: the cell's launch is the pane's foreground job (its process group is the pane's foreground one),
+    not merely a descendant of that shell (an agent host started there runs its cells in other groups)."""
+    try:
+        return os.getpgid(pid) == _process_info(pane).get("foreground_process_group_id")
+    except (OSError, ProcessLookupError):
+        return False
 
 
 def pane_of_pid(pid, agents, taken=()):
@@ -289,7 +305,7 @@ def pane_of_pid(pid, agents, taken=()):
         if sp is not None:
             shells.setdefault(sp, pane)
     found = next((shells[p] for p in _ancestors(pid) if p in shells), None)
-    if found in taken:
+    if found in taken or (found is not None and not _in_foreground(pid, found)):
         found = None
     _PANE_OF_PID[pid] = (key, found)
     return found
@@ -1220,12 +1236,26 @@ class Deck:
         cell online elsewhere is said first (checked fresh, in the background) and nothing is created."""
         argv = [*A4SX_ARGV, "launch", "--cell", name] + (["--a4sx-session", f"handoff-{name}"] if with_handoff else [])
 
+        pending = self.__dict__.setdefault("starting", set())
+        if name in pending:   # review: a second press while the first is checked opens no second tab
+            return
+        pending.add(name)
+        self.msg = f"{name}: checking where it runs …"
+
         def work():
-            if self.running_now(name) is None and self.still_elsewhere(name):
-                return self.elsewhere_note(name)
-            self.note([new_tab(name, self.pdir(name), argv, cell=name),
-                       "the tab shows the outcome: the cell moves here when it is yours, you are signed in here and it is stopped there",
-                       f"{DIM}running there? stop it there first (deck: x stops it){RS}"])
+            try:
+                now = self.running_now(name)
+                if now is not None:
+                    return self.already_running(name, now)
+                if self.still_elsewhere(name):
+                    return self.elsewhere_note(name)
+                self.note([new_tab(name, self.pdir(name), argv, cell=name),
+                           "the tab shows the outcome: the cell moves here when it is yours, you are signed in here and it is stopped there",
+                           f"{DIM}running there? stop it there first (deck: x stops it){RS}"])
+            finally:
+                pending.discard(name)
+                if self.msg.startswith(f"{name}: checking"):
+                    self.msg = ""
         threading.Thread(target=work, daemon=True).start()
 
     def state_cell(self, r, tick):
