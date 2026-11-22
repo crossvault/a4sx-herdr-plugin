@@ -618,6 +618,20 @@ class Deck048(unittest.TestCase):
         ui.d.rows = [a]      # b is gone: the index stays in range
         self.assertEqual(ui.cur()["name"], "a")
 
+    def test_the_selection_can_move_past_two_rows_with_the_same_name(self):
+        """Review of 1f2fbea: two library entries x-backup share a key; down must reach the second and the row below."""
+        ui = object.__new__(deck.Deck)
+        ui.view, ui.sel, ui.mode = "library", {"library": 0}, "browse"
+        ui.d = types.SimpleNamespace(rows=[], library=[{"name": "x-backup"}, {"name": "x-backup"}, {"name": "y"}])
+        ui.cur()
+        for want in (1, 2):
+            n = len(ui.items())
+            ui.sel["library"] = min(max(0, n - 1), ui.sel["library"] + 1)
+            ui.__dict__.setdefault("sel_key", {}).pop("library", None)
+            ui.cur()
+            self.assertEqual(ui.sel["library"], want)
+            self.assertEqual(ui.sel["library"], want, "stays after another refresh")
+
     def test_a_cells_pane_is_found_by_its_launch_before_a_folder_named_like_it(self):
         src = open(os.path.join(HERE, "..", "deck.py"), encoding="utf-8").read()
         i = src.index("def row(name, iid, presence, own=None):")

@@ -898,9 +898,11 @@ class Deck:
         if not its:
             return 0
         key = names.get(self.view)
-        at = next((k for k, x in enumerate(its) if _item_key(x) == key), None) if key is not None else None
-        if at is not None:
-            self.sel[self.view] = at
+        cur = min(self.sel[self.view], len(its) - 1)
+        if key is not None and _item_key(its[cur]) != key:   # review: the row there now isn't the chosen one:
+            hits = [k for k, x in enumerate(its) if _item_key(x) == key]   # the nearest row with its key
+            if hits:
+                self.sel[self.view] = min(hits, key=lambda k: abs(k - cur))
         i = min(self.sel[self.view], len(its) - 1)
         names[self.view] = _item_key(its[i])
         return i
@@ -1100,8 +1102,11 @@ class Deck:
                     time.sleep(2)
                 # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab
                 # (review: not after a question: the answer decides, "no" is a new tab)
-                if own and pane_is_idle_shell(own[0]):   # 0.4.8: its own tab, now a bare prompt after the stop
-                    return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=own)]
+                if own:   # 0.4.8: its own tab, a bare prompt once the stop has ended the launch (review: a few seconds)
+                    for _ in range(5):
+                        if pane_is_idle_shell(own[0]):
+                            return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=own)]
+                        time.sleep(1)
                 old = _leftover_pane(r["name"]) if ok_name and not asked and not own else None
                 if old and pane_is_idle_shell(old[0]):
                     return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=old)]
