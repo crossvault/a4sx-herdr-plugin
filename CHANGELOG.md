@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 - 2026-11-22
+
+- S's note for an a4sx without `agent-host stop` names the version that has it: a4sx 0.59.10 (the number #2326 got at its merge; it said 0.59.15). Only the text changed: the check stays a probe of `agent-host stop --help`, not a version compare.
+
 ## 0.4.2 - 2026-11-21
 
 Follow-ups from cell01's Omarchy recheck (herdr 0.9.5, a4sx #2309):
