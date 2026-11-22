@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.9 - 2026-11-22
+
+From cell01's Omarchy recheck of 0.4.8 with a4sx 0.59.21 (a4sx #2309 q, r):
+- **r on a stopped cell with two tabs named after it** starts it in the tab it last ran in. The deck now remembers a cell's tab whenever it sees the cell running in it, and when it reuses a tab, not only when it opens one.
+- **After a stop** the row shows the cell stopped at once, with the folder its last session ran in (a4sx's record). Before, the refresh after an operation was skipped while another one ran, so the row could say "● running" with the old folder until the next round.
+- **The result line of a reused tab** says "ran the start in its tab «X» again". It no longer says "its pane from before herdr restarted" when herdr wasn't restarted.
+
 ## 0.4.8 - 2026-11-22
 
 From cell01's Omarchy check of 0.4.7 (a4sx #2309 q, r):

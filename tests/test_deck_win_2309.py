@@ -638,3 +638,58 @@ class Deck048(unittest.TestCase):
         body = src[i:src.index("return {", i)]
         self.assertLess(body.index("pane_of_pid("), body.index("os.path.basename((x.get(\"cwd\")"))
 
+
+
+class Deck049(unittest.TestCase):
+    """0.4.9, cell01's Omarchy recheck of 0.4.8."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_a_pane_the_cell_is_seen_running_in_becomes_its_tab(self):
+        saved = {}
+        with mock.patch.object(deck, "_cell_panes", lambda: {"omarchy-cell": ["w1:pG", "w1:tG"]}), \
+                mock.patch.object(deck, "_remember_cell_pane", lambda c, p, t: saved.update({c: (p, t)})), \
+                mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1"}]}}):
+            deck.remember_running_panes([{"name": "omarchy-cell", "running": True, "pane": "w1:p1", "pane_by": "pid"},
+                                         {"name": "other", "running": False, "pane": None}])
+        self.assertEqual(saved, {"omarchy-cell": ("w1:p1", "w1:t1")})
+
+    def test_nothing_is_asked_of_herdr_when_the_record_already_holds_the_pane(self):
+        with mock.patch.object(deck, "_cell_panes", lambda: {"c": ["w1:p1", "w1:t1"]}), \
+                mock.patch.object(deck, "jrun", lambda *a, **k: self.fail("asked herdr")):
+            deck.remember_running_panes([{"name": "c", "running": True, "pane": "w1:p1", "pane_by": "pid"}])
+
+    def test_a_pane_found_only_by_its_folder_name_is_never_recorded(self):
+        """Review of 99aaf57: the folder fallback can be another «cell» tab or a plain Claude Code session."""
+        with mock.patch.object(deck, "_cell_panes", lambda: {}), \
+                mock.patch.object(deck, "_remember_cell_pane", lambda *a: self.fail("recorded a folder-found pane")), \
+                mock.patch.object(deck, "jrun", lambda *a, **k: self.fail("asked herdr")):
+            deck.remember_running_panes([{"name": "omarchy-cell", "running": True, "pane": "w1:pG", "pane_by": "folder"}])
+
+    def test_a_reused_tab_is_remembered_and_the_line_names_no_herdr_restart(self):
+        saved = {}
+        with mock.patch.object(deck, "_leftover_pane", lambda c: ("w1:p1", "w1:t1")), \
+                mock.patch.object(deck, "pane_is_idle_shell", lambda p: True), \
+                mock.patch.object(deck, "run", lambda argv, *a, **k: (0, "", "")), \
+                mock.patch.object(deck, "IN_HERDR", True), mock.patch.object(deck, "WIN", False), \
+                mock.patch.object(deck, "_remember_cell_pane", lambda c, p, t: saved.update({c: (p, t)})):
+            out = deck.new_tab("omarchy-cell", "/nonexistent-deck-test/demo", ["a4sx", "launch", "--cell", "omarchy-cell"],
+                               cell="omarchy-cell", reuse=("w1:p1", "w1:t1"))
+        self.assertEqual(saved, {"omarchy-cell": ("w1:p1", "w1:t1")})
+        self.assertIn("ran the start in its tab «omarchy-cell» again", out)
+        self.assertNotIn("herdr restarted", out)
+
+    def test_after_an_operation_the_refresh_waits_instead_of_skipping(self):
+        d = object.__new__(deck.Data)
+        d.busy = threading.Lock()
+        seen = []
+        d._refresh = lambda force: seen.append(force)
+        d.busy.acquire()
+        threading.Timer(0.2, d.busy.release).start()
+        d.refresh("server", wait=True)
+        self.assertEqual(seen, ["server"])
+        d.busy.acquire()
+        d.refresh("server")   # a due refresh still skips while one runs
+        self.assertEqual(seen, ["server"])
+        d.busy.release()

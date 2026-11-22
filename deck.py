@@ -453,8 +453,10 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
         # the shell may be in another folder: cd first, in the same line
         if run([HERDR, "pane", "run", pane, "cd " + shlex.quote(cwd) + " && " + " ".join(shlex.quote(a) for a in argv)])[0] == 0:
             run([HERDR, "tab", "focus", tab])
+            if cell:   # 0.4.9 (cell01): a reused tab is the cell's tab from now on, as a new one is
+                _remember_cell_pane(cell, pane, tab)
             # 0.4.5 (cell01): the CLI may still refuse in it, so this says what was done, not that it started
-            return f"ran the start in its tab «{label}» again (its pane from before herdr restarted; the tab shows the outcome): {shown}"
+            return f"ran the start in its tab «{label}» again (the tab shows the outcome): {shown}"
     d = jrun([HERDR, "tab", "create", "--cwd", cwd, "--label", label, "--focus"]).get("result") or {}
     pane, tab = (d.get("root_pane") or {}).get("pane_id"), (d.get("tab") or {}).get("tab_id")
     if not pane:
@@ -471,6 +473,24 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
 LABELED = {}
 #: the sources that put a cell's name on a pane: the deck's own and `a4sx launch`'s (HERDR_META_SOURCE in the CLI)
 LABEL_SOURCES = ("a4sx-deck", "a4sx-launch")
+
+
+def remember_running_panes(rows):
+    """0.4.9 (cell01: two tabs «omarchy-cell», the restore took the other one): the pane a cell is SEEN running in is
+    its tab from now on, as one the deck opened: a later restore of the stopped cell reuses that tab."""
+    rec = _cell_panes()
+    # review: only a pane found by the launch's own process; a folder-name match can be another tab or a plain
+    # Claude Code session in ~/projects/<cell>, and a recorded pane is later reused with no question
+    want = {r["name"]: r["pane"] for r in rows if r.get("running") and r.get("pane") and r.get("pane_by") == "pid"
+            and CELL_NAME_RE.fullmatch(str(r.get("name") or ""))
+            and (rec.get(r["name"]) or [None])[0] != r["pane"]}
+    if not want:
+        return
+    panes = (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
+    tab_of = {p.get("pane_id"): p.get("tab_id") for p in panes}
+    for name, pane in want.items():
+        if tab_of.get(pane):
+            _remember_cell_pane(name, pane, tab_of[pane])
 
 
 def label_panes(rows, cells=(), clear=True):
@@ -730,9 +750,11 @@ class Data:
                             "vers": m.group(6), "size": sz.group(1) if sz else "", "title": sz.group(2) if sz else rest})
         return lib
 
-    def refresh(self, force=""):
-        """force: "" = what is due, "server" = cells and peers now (after an operation), "all" = everything now."""
-        if not self.busy.acquire(blocking=False):
+    def refresh(self, force="", wait=False):
+        """force: "" = what is due, "server" = cells and peers now (after an operation), "all" = everything now.
+        wait (0.4.9, cell01): after an operation, wait for a refresh already running and read again, instead of
+        skipping (a stop showed "● running" with the old folder until the next round)."""
+        if not self.busy.acquire(blocking=wait, timeout=30 if wait else -1):
             return
         try:
             self._refresh(force)
@@ -808,7 +830,7 @@ class Data:
 
         def row(name, iid, presence, own=None):
             m, c = owner.get(iid) or {}, local.get(iid)
-            pane = state = cwd = None
+            pane = state = cwd = by = None
             is_running = bool(c and (c.get("local") or {}).get("state") == "running")
             if is_running:
                 # cell01: only an agent whose folder is named after the cell. Never "the one agent here": that put the
@@ -818,12 +840,16 @@ class Data:
                 pp = pane_of_pid((c.get("local") or {}).get("pid"), agents,
                                  {p for p, n in taken_by.items() if p and n != name}) if IN_HERDR else None
                 a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
+                by = "pid" if a else None
                 if a is None:
                     a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+                    by = "folder" if a else None
                 if a:
                     pane, state, cwd = a.get("pane_id"), a.get("agent_status"), a.get("cwd")
+            elif c:   # 0.4.9 (cell01): a cell that doesn't run shows the folder its last session ran in (a4sx's record)
+                cwd = recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
             return {"name": name, "iid": iid, "presence": presence or "?", "owner": m.get("display_name") or "?", "mine": bool(own) if own is not None else (bool(m) and m is me),
-                    "role": m.get("role") or "", "here": bool(c), "running": is_running, "pane": pane, "state": state,
+                    "role": m.get("role") or "", "here": bool(c), "running": is_running, "pane": pane, "pane_by": by, "state": state,
                     "cwd": cwd, "cell": c or {}}
         for p in peers:
             seen.add(p.get("instance_id"))
@@ -835,6 +861,7 @@ class Data:
         rows.sort(key=lambda r: (not r["here"], r["presence"] != "online", r["name"] or ""))
         if IN_HERDR and server_due:
             label_panes(rows, cells, clear=agents_ok)
+            remember_running_panes(rows)
         self.n += 1
         if not ref:   # review: no mesh, no records to read: the panel says "none yet", not "reading …" forever
             with self.lock:
@@ -925,7 +952,7 @@ class Deck:
                 self.msg = f"{title}: {e!r}"
             self.busy = False
             try:   # an operation changed something: cells and peers now, the library too when it was touched
-                self.d.refresh("all" if any(w in title for w in ("backup", "hand-off", "fetch", "refresh")) else "server")
+                self.d.refresh("all" if any(w in title for w in ("backup", "hand-off", "fetch", "refresh")) else "server", wait=True)
             except Exception:   # noqa: BLE001
                 pass
         threading.Thread(target=work, daemon=True).start()
