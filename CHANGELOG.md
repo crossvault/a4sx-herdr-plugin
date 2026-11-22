@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.8 - 2026-11-22
+
+From cell01's Omarchy check of 0.4.7 (a4sx #2309 q, r):
+- **r on a running cell** restarts it in its own tab and that tab's folder: the pane its launch runs in, found by its process. Before, it used a4sx's record of the last session's folder, which a4sx doesn't update on every start (fixed in the a4sx CLI separately), so the cell could start in an old restore folder. With two tabs named after the cell, it could also restart in the other tab. The record is now used only for a cell that doesn't run.
+- **The cells list finds a running cell's pane by its launch first**, then by a folder named like the cell.
+- **The selection stays on the same cell** when the list reorders, for example after a stop. Before, it stayed on the same row number, so the next key could act on the other cell.
+
 ## 0.4.7 - 2026-11-22
 
 From cell01's Omarchy check of 0.4.6 (a4sx #2309 q, r):

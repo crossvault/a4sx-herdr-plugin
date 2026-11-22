@@ -235,6 +235,16 @@ def recorded_cwd(name, iid):
     return cwd if isinstance(cwd, str) and os.path.isabs(cwd) and os.path.isdir(cwd) else None
 
 
+def _pane_idle_in(pane, cwd):
+    """0.4.8: `pane` shows a bare shell prompt in `cwd` (its shell's /proc/<pid>/cwd) and has no agent. Linux only."""
+    pid = _idle_shell_pid(pane) if isinstance(pane, str) else None
+    try:
+        here = os.path.realpath(os.readlink(f"/proc/{int(pid)}/cwd")) if pid else None
+        return here is not None and here == os.path.realpath(cwd) and not _pane_has_agent(pane)
+    except (OSError, ValueError):
+        return False
+
+
 def _pane_in_folder(cwd, skip_tab=None, skip_pane=None):
     """0.4.7 (cell01): a herdr pane that shows a bare shell prompt in `cwd` (its shell's own folder, /proc/<pid>/cwd)
     and has no agent: the cell's old tab when the deck has no record of it. (pane, tab), or None. Linux only."""
@@ -289,6 +299,11 @@ def pane_is_empty_shell(pane):
     Ctrl-Z, `npm run dev &`, an ssh tunnel are children). Unreadable counts as busy."""
     sp = _idle_shell_pid(pane)
     return sp is not None and _shell_children(sp) == []
+
+
+def _item_key(x):
+    """0.4.8: what a list row is, across refreshes: its kind, name and instance id."""
+    return (x.get("kind"), x.get("name"), x.get("iid")) if isinstance(x, dict) else None
 
 
 def runs_elsewhere(r):
@@ -427,8 +442,8 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
         # review: fish reads \\ and \' inside single quotes, so shlex's quoting isn't safe there; nothing is typed
         return f"a backslash or line break in the folder or the command can't be typed into herdr's shell safely, so nothing was started: {shown}"
     old = _leftover_pane(cell) if (cell and reuse) else None
-    if reuse and not (old and tuple(old) == tuple(reuse)):   # 0.4.7: or the idle shell in the cell's own folder
-        old = _pane_in_folder(cwd)
+    if reuse and not (old and tuple(old) == tuple(reuse)):   # 0.4.7/0.4.8: or that very pane, an idle shell in cwd
+        old = tuple(reuse) if _pane_idle_in(reuse[0], cwd) else None
     if old and tuple(old) == tuple(reuse):
         pane, tab = old
         # follow-up (c): a half-typed line would prefix the start line; ctrl+u clears it, sent only when herdr's
@@ -788,7 +803,8 @@ class Data:
 
         # 0.4.5 review: the panes a running cell has by its folder name are never given to another cell by process
         names_here = {c.get("name") for c in running}
-        taken = {x.get("pane_id") for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) in names_here}
+        taken_by = {x.get("pane_id"): os.path.basename((x.get("cwd") or "").rstrip("/")) for x in agents
+                    if os.path.basename((x.get("cwd") or "").rstrip("/")) in names_here}
 
         def row(name, iid, presence, own=None):
             m, c = owner.get(iid) or {}, local.get(iid)
@@ -797,10 +813,13 @@ class Data:
             if is_running:
                 # cell01: only an agent whose folder is named after the cell. Never "the one agent here": that put the
                 # cell's name on a plain Claude Code pane of another herdr session's owner (seen 2026-11-21)
-                a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
-                if a is None and IN_HERDR:   # 0.4.5: or the pane its launch runs in (a folder named otherwise)
-                    pp = pane_of_pid((c.get("local") or {}).get("pid"), agents, taken)
-                    a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
+                # 0.4.8 (cell01: two tabs «omarchy-cell»): the pane its launch runs in first, by its process; only then
+                # an agent whose folder is named after the cell
+                pp = pane_of_pid((c.get("local") or {}).get("pid"), agents,
+                                 {p for p, n in taken_by.items() if p and n != name}) if IN_HERDR else None
+                a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
+                if a is None:
+                    a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
                 if a:
                     pane, state, cwd = a.get("pane_id"), a.get("agent_status"), a.get("cwd")
             return {"name": name, "iid": iid, "presence": presence or "?", "owner": m.get("display_name") or "?", "mine": bool(own) if own is not None else (bool(m) and m is me),
@@ -872,9 +891,23 @@ class Deck:
                     + [{"kind": "handoff", **x} for x in d.library if x["name"].startswith("handoff-")])
         return d.rows
 
+    def keep_sel(self, its):
+        """0.4.8 (cell01): the selection stays on the same cell when the list reorders (after a stop, a refresh): the
+        next key acts on the row the person chose, not on whichever row moved into its place."""
+        names = self.__dict__.setdefault("sel_key", {})
+        if not its:
+            return 0
+        key = names.get(self.view)
+        at = next((k for k, x in enumerate(its) if _item_key(x) == key), None) if key is not None else None
+        if at is not None:
+            self.sel[self.view] = at
+        i = min(self.sel[self.view], len(its) - 1)
+        names[self.view] = _item_key(its[i])
+        return i
+
     def cur(self):
         it = self.items()
-        return it[min(self.sel[self.view], len(it) - 1)] if it else None
+        return it[self.keep_sel(it)] if it else None
 
     def note(self, lines, title="result"):
         self.out, self.out_title, self.msg = list(lines), title, ""
@@ -1044,8 +1077,19 @@ class Deck:
                 if self.still_elsewhere(r["name"]):   # 0.4.6: as s and n (F6): nothing is started here
                     return self.elsewhere_lines(r["name"], "started here from a saved conversation", "start it here")
             ok_name = CELL_NAME_RE.fullmatch(str(r["name"]))
+            # 0.4.8 (cell01): a running cell's own tab, the pane its launch runs in (by its process), and that tab's
+            # folder come first: the CLI's record is only for a cell that doesn't run (it isn't written on every start)
+            own = None
+            if r["running"] and ok_name:
+                pane = self.running_now(r["name"], r.get("iid"))
+                if pane:
+                    tab = next((p.get("tab_id") for p in (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
+                                if p.get("pane_id") == pane), None)
+                    own = (pane, tab) if tab else None
+            run_cwd = (self.__dict__.get("run_cwd") or {}).get(r["name"]) if own else None
             # 0.4.7 (cell01): the folder its last session ran in (the CLI's record), not always ~/projects/<cell>
-            cwd = (recorded_cwd(r["name"], r.get("iid")) if ok_name else None) or self.pdir(r["name"])
+            cwd = ((run_cwd if isinstance(run_cwd, str) and os.path.isdir(run_cwd) else None)
+                   or (recorded_cwd(r["name"], r.get("iid")) if ok_name else None) or self.pdir(r["name"]))
             argv = [*A4SX_ARGV, "launch", "--cell", r["name"], "--a4sx-session", saved]
 
             def finish(use_there=None, asked=False):
@@ -1056,7 +1100,9 @@ class Deck:
                     time.sleep(2)
                 # 0.4.6 (q): its old tab from before a herdr restart, when it shows a bare shell prompt, not one more tab
                 # (review: not after a question: the answer decides, "no" is a new tab)
-                old = _leftover_pane(r["name"]) if ok_name and not asked else None
+                if own and pane_is_idle_shell(own[0]):   # 0.4.8: its own tab, now a bare prompt after the stop
+                    return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=own)]
+                old = _leftover_pane(r["name"]) if ok_name and not asked and not own else None
                 if old and pane_is_idle_shell(old[0]):
                     return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=old)]
                 return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=use_there)]
@@ -1065,6 +1111,8 @@ class Deck:
             # their exported variables): asked, never taken by itself, and asked BEFORE anything is stopped, so Esc
             # (or no answer) leaves a running cell running
             # review: the deck's own record first: its idle pane is reused with no question, as in 0.4.6
+            if own:   # 0.4.8: the running cell's own tab: no question about other shells
+                return finish()
             rec = _leftover_pane(r["name"]) if ok_name else None
             if rec and pane_is_idle_shell(rec[0]):
                 return finish()
@@ -1193,11 +1241,16 @@ class Deck:
         if d is not None and (LIMITED[0] > getattr(d, "seen_limit", 0) or time.time() < getattr(d, "slow_until", 0)):
             return None
         got = jrun([*A4SX_ARGV, "mesh", "cells", "--json"], 15)
-        if not any((c.get("instance_id") == iid if iid else c.get("name") == name)
-                   and (c.get("local") or {}).get("state") == "running" for c in got.get("cells") or []):
+        c = next((c for c in got.get("cells") or [] if (c.get("instance_id") == iid if iid else c.get("name") == name)
+                  and (c.get("local") or {}).get("state") == "running"), None)
+        if c is None:
             return None
         agents = ((jrun([HERDR, "agent", "list"], 8).get("result") or {}).get("agents") or []) if IN_HERDR else []
-        a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+        # 0.4.8 (cell01): the pane its launch runs in, by its process, before a folder named like the cell
+        pp = pane_of_pid((c.get("local") or {}).get("pid"), agents) if IN_HERDR else None
+        a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
+        a = a or next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+        self.__dict__.setdefault("run_cwd", {})[name] = (a or {}).get("cwd")
         return (a or {}).get("pane_id") or ""
 
     def already_running(self, name, pane):
@@ -1448,8 +1501,8 @@ class Deck:
         need += [f"{YEL}● join request: {q.get('display_name') or '?'}{RS}" for q in reqs]
         ppl = "   ".join(f"{MAG}●{RS} {FG}{m.get('display_name') or '?'}{RS} {DIM}{m.get('role') or ''} · {len(m.get('instances') or [])}{RS}" for m in members)
         o.append(fit(f" {B}needs you{RS}  " + ("   ".join(need) if need else f"{DIM}nothing{RS}") + f"     {DIM}people{RS}  {ppl}", W))
-        its, sel = self.items(), self.sel[self.view]
-        sel = min(sel, max(0, len(its) - 1))
+        its = self.items()
+        sel = self.keep_sel(its)
         out_h = (min(len(self.out), 11) + 2) if self.out else 0
         ov_h = (min(len(self.pick), 12) + 3) if self.mode == "pick" else (3 if self.mode == "input" else 0)
         main_h = max(8, H - len(o) - out_h - ov_h - 3)
@@ -1620,8 +1673,10 @@ class Deck:
                 self.reload_library()
         elif k in ("up", "k"):
             self.sel[self.view] = max(0, min(self.sel[self.view], n - 1) - 1)
+            self.__dict__.setdefault("sel_key", {}).pop(self.view, None)   # 0.4.8: the person moved: the new row counts
         elif k in ("down", "j"):
             self.sel[self.view] = min(max(0, n - 1), self.sel[self.view] + 1)
+            self.__dict__.setdefault("sel_key", {}).pop(self.view, None)
         elif k == ".":
             if time.time() - self.last_dot < 15:
                 self.msg = "refreshed a moment ago (the server allows a sign-in about 60 lookups a minute)"

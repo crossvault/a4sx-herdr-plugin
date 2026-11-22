@@ -567,3 +567,60 @@ class Deck047Restore(unittest.TestCase):
         ui.choose = lambda *a, **k: self.fail("the picker was shown")
         ui.restore({"name": "win-cell", "here": True, "mine": True, "presence": "online", "running": False})
         self.assertIn("can't be started here from a saved conversation yet", seen["lines"][0])
+
+
+class Deck048(unittest.TestCase):
+    """0.4.8, cell01's Omarchy check of 0.4.7."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_r_on_a_running_cell_uses_its_own_tab_and_folder_not_the_record(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo, tempfile.TemporaryDirectory() as old:
+            rec = os.path.join(st, "a4sx", "agents", "omarchy-cell", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "cells": {"ins_A": {"sid": "s", "cwd": old}}}, f)   # a stale record
+            ui, _seen = _ui([_row("omarchy-cell", here=True, running=True)])
+            ui.d.refresh = lambda what: None
+            ui.choose = lambda *a, **k: self.fail("no question for the cell's own tab")
+
+            def running_now(name, iid=None):
+                ui.__dict__.setdefault("run_cwd", {})[name] = demo
+                return "w1:p7"
+            ui.running_now = running_now
+            idle = {"v": False}
+            got = {}
+
+            def jrun(argv, t=30):
+                return {"result": {"panes": [{"pane_id": "w1:p7", "tab_id": "w1:t7"}, {"pane_id": "w1:p2", "tab_id": "w1:t2"}]}} \
+                    if argv[1:3] == ["pane", "list"] else {}
+            with mock.patch.object(deck, "STATE", st), mock.patch.object(deck, "jrun", jrun), \
+                    mock.patch.object(deck, "_leftover_pane", lambda c: ("w1:p2", "w1:t2")), \
+                    mock.patch.object(deck, "pane_is_idle_shell", lambda p: idle["v"] and p == "w1:p7"), \
+                    mock.patch.object(deck, "run", lambda argv, *a, **k: idle.update(v=True) or (0, "", "")), \
+                    mock.patch.object(deck.time, "sleep", lambda s: None), \
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(cwd=cwd, reuse=reuse) or "ok"):
+                ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
+            # its own running tab (not the other «omarchy-cell» tab the deck recorded) and that tab's folder
+            self.assertEqual(got, {"cwd": demo, "reuse": ("w1:p7", "w1:t7")})
+
+    def test_the_selection_stays_on_the_same_cell_when_the_list_reorders(self):
+        ui = object.__new__(deck.Deck)
+        ui.view, ui.sel = "mesh", {"mesh": 0}
+        a, b = {"name": "a", "iid": "ins_a"}, {"name": "b", "iid": "ins_b"}
+        ui.d = types.SimpleNamespace(rows=[a, b], library=[])
+        ui.sel["mesh"] = 1
+        self.assertEqual(ui.cur()["name"], "b")
+        ui.d.rows = [b, a]   # after a stop, b sorts first
+        self.assertEqual(ui.cur()["name"], "b")
+        ui.d.rows = [a]      # b is gone: the index stays in range
+        self.assertEqual(ui.cur()["name"], "a")
+
+    def test_a_cells_pane_is_found_by_its_launch_before_a_folder_named_like_it(self):
+        src = open(os.path.join(HERE, "..", "deck.py"), encoding="utf-8").read()
+        i = src.index("def row(name, iid, presence, own=None):")
+        body = src[i:src.index("return {", i)]
+        self.assertLess(body.index("pane_of_pid("), body.index("os.path.basename((x.get(\"cwd\")"))
+
