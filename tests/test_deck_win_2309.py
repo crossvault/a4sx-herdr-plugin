@@ -329,5 +329,37 @@ class Deck046(unittest.TestCase):
         self.assertEqual(where, "◇ stored here")
 
 
+class Deck046Remarks(unittest.TestCase):
+    """0.4.6, cell01's remarks on the 0.4.5 recheck."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_reading_until_the_first_read(self):
+        d = types.SimpleNamespace(lock=threading.Lock(), activity=[], activity_read=False)
+        self.assertEqual(deck.own_messages(d, "x"), ["reading this host's delivery records …"])
+        d.activity_read = True
+        self.assertEqual(deck.own_messages(d, "x"), ["no messages recorded on this host for this cell yet"])
+        with open(os.path.join(HERE, "..", "deck.py"), encoding="utf-8") as f:
+            self.assertIn("reading this host's delivery records …", f.read())
+
+    def test_m_on_a_running_cell_shows_its_own_deliveries(self):
+        d = types.SimpleNamespace(lock=threading.Lock(), activity_read=True, activity=[
+            (1763800000, "out", "omarchy-cell", "win-cell", "delivered"), (1763700000, "in", "other", "win-cell", "inbox")])
+        got = deck.own_messages(d, "omarchy-cell")
+        self.assertEqual(len(got), 1)
+        self.assertIn("to   win-cell  delivered", got[0])
+
+    def test_view_5_lists_a_cell_running_elsewhere_with_the_other_hosts(self):
+        ui, _seen = _ui([_row("win-cell", here=True, presence="online"), _row("omarchy-cell", here=True, presence="online", running=True)])
+        ui.d.library = []
+        ui.view = "move"
+        kinds = {x["name"]: x["kind"] for x in ui.items()}
+        self.assertEqual(kinds, {"win-cell": "away", "omarchy-cell": "cell"})
+        self.assertTrue(deck.runs_elsewhere(_row("win-cell", here=True, presence="online")))
+        self.assertFalse(deck.runs_elsewhere(_row("x", here=True, presence="online", running=True)))
+        self.assertFalse(deck.runs_elsewhere(_row("x", here=False, presence="online")))
+
+
 if __name__ == "__main__":
     unittest.main()

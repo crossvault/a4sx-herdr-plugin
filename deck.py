@@ -239,9 +239,25 @@ def pane_is_empty_shell(pane):
     return sp is not None and _shell_children(sp) == []
 
 
+def runs_elsewhere(r):
+    """0.4.6 (r): your cell, stored here too, online and not running on this host: it runs on another host now."""
+    return bool(r.get("here") and r.get("mine") and r.get("presence") == "online" and not r.get("running"))
+
+
 def of_cell(saved, cell):
     """0.4.6 (q): a save of this cell, by the names the front ends give them (`<cell>-backup`, `handoff-<cell>`)."""
     return bool(cell) and (saved.startswith(cell + "-") or saved == f"handoff-{cell}" or saved == cell)
+
+
+def own_messages(d, cell, n=12):
+    """0.4.6: a running cell's own last deliveries, from the records the deck reads anyway (newest first)."""
+    with d.lock:
+        acts = [a for a in d.activity if a[2] == cell][:n]
+        read = getattr(d, "activity_read", True)
+    if not acts:
+        return ["no messages recorded on this host for this cell yet" if read else "reading this host's delivery records …"]
+    return [f"{time.strftime('%m-%d %H:%M', time.localtime(at))}  {'from' if way == 'in' else 'to  '} {peer}  {status}"
+            for at, way, _c, peer, status in acts]
 
 
 def restore_order(lib, cell):
@@ -602,6 +618,7 @@ class Data:
         self.members, self.rows, self.cells, self.agents, self.requests, self.library = [], [], [], [], [], []
         self.mine = {}
         self.activity, self.n = [], 0
+        self.activity_read = False                # 0.4.6 (cell01): "reading…" until the first read of the records
         self.ah = {"running": False, "address": "", "known": False, "open": []}
         self.peers = []
         self.t_server = self.t_rare = self.t_act = 0.0
@@ -750,7 +767,7 @@ class Data:
             self.t_act = now
             act = self.load_activity(ref, rows)
             with self.lock:
-                self.activity = act
+                self.activity, self.activity_read = act, True
         if LIMITED[0] > self.seen_limit:   # this very refresh was told to slow down
             self.seen_limit = LIMITED[0]
             self.slow_until = time.time() + self.backoff
@@ -792,8 +809,9 @@ class Deck:
         if self.view == "host":
             return [r for r in d.rows if r["here"]]
         if self.view == "move":
-            return ([{"kind": "cell", **r} for r in d.rows if r["here"]]
-                    + [{"kind": "away", **r} for r in d.rows if not r["here"] and r.get("mine")]
+            # 0.4.6 (r): a cell stored here that runs on another host is listed with the cells on other hosts
+            return ([{"kind": "cell", **r} for r in d.rows if r["here"] and not runs_elsewhere(r)]
+                    + [{"kind": "away", **r} for r in d.rows if (not r["here"] or runs_elsewhere(r)) and r.get("mine")]
                     + [{"kind": "handoff", **x} for x in d.library if x["name"].startswith("handoff-")])
         return d.rows
 
@@ -909,9 +927,12 @@ class Deck:
             has = any(x["name"] == f"handoff-{r['name']}" for x in d.library)
             if r.get("mine"):
                 ops += [("s", "bring it here (starts it on this host)", lambda: self.bring(r["name"], False))]
-        ops += [("m", "last messages with your cell", lambda: self.bg(f"{me} ↔ {r['name']}", lambda: [
-            x.strip() for x in lines_of(run([*A4SX_ARGV, "mesh", "deliveries", r["name"], "--mesh", mesh, "--last", "8"]),
-                                        "no messages recorded here with this cell")]))]
+        if r.get("running"):   # 0.4.6 (cell01): a cell of this host: its own deliveries, not «me ↔ me»
+            ops += [("m", "its last messages", lambda: self.note(own_messages(d, r["name"]), f"{r['name']}: last messages"))]
+        else:
+            ops += [("m", "last messages with your cell", lambda: self.bg(f"{me} ↔ {r['name']}", lambda: [
+                x.strip() for x in lines_of(run([*A4SX_ARGV, "mesh", "deliveries", r["name"], "--mesh", mesh, "--last", "8"]),
+                                            "no messages recorded here with this cell")]))]
         if r["name"] != me:
             ops += [("w", "why can/can't you message it", lambda: self.bg(f"{me} → {r['name']}", lambda: lines_of(
                         run([*A4SX_ARGV, "mesh", "policy", mesh, "--explain", me, r["name"]])))),
@@ -1011,7 +1032,7 @@ class Deck:
             return f"{CYAN}◆ here{RS} {MAG}VS Code{RS}"
         if r["running"]:
             return f"{CYAN}◆ here{RS} {DIM}{'no pane' if IN_HERDR else 'terminal'}{RS}"
-        if r["here"] and r.get("mine") and r.get("presence") == "online":   # 0.4.6 (r): runs on another host now
+        if runs_elsewhere(r):   # 0.4.6 (r): runs on another host now
             return f"{YEL}● elsewhere now{RS} {DIM}· stored here{RS}"
         return f"{CYAN}◇ stored here{RS}" if r["here"] else f"{DIM}elsewhere{RS}"
 
@@ -1360,7 +1381,9 @@ class Deck:
             Rt = []
             if cur:
                 Rt = [f"{FG}{B}{cur['name']}{RS}  {self.state_cell(cur, tick)}", f"{DIM}of{RS} {cur['owner']} {DIM}{cur['role']}{RS}"]
-                if cur["here"]:
+                if cur["here"] and runs_elsewhere(cur):   # 0.4.6 (r): not "on <this host>" while it runs elsewhere
+                    Rt += [f"{DIM}on another host now; stored on{RS} {HOST} {DIM}too{RS}", ""]
+                elif cur["here"]:
                     Rt += [f"{DIM}on{RS} {HOST}" + (f" {DIM}· pane{RS} {cur['pane']}" if cur["pane"] else ""),
                            f"{DIM}in{RS} {cur['cwd'] or self.pdir(cur['name'])}",
                            f"{DIM}profile{RS} {cur['cell'].get('profile') or '—'}  {DIM}reach{RS} {pol.get('can_talk_to') if pol.get('can_talk_to') is not None else '?'} cells"]
@@ -1443,7 +1466,8 @@ class Deck:
                 what = {"inbox": "in the inbox", "sent": "sent, waiting for the confirmation", "delivered": "delivered", "held": f"{YEL}held for you{RS}"}.get(status, status)
                 A.append(f"{DIM}{time.strftime('%H:%M:%S', time.localtime(at))}{RS}  {FG}{fit(cell or '', 16)}{RS} {arrow} {FG}{fit(peer, 26)}{RS} {DIM}{what}{RS}")
             if not A:
-                A = [f"{DIM}no messages recorded on this host yet{RS}"]
+                A = [f"{DIM}no messages recorded on this host yet{RS}" if getattr(d, "activity_read", True)
+                     else f"{DIM}reading this host's delivery records …{RS}"]
             left_box = box(title, L, lw, top_h, BLUE, f"{sel + 1}/{len(its)}" if its else "") + box(
                 "MESSAGES OF THIS HOST'S CELLS", A, lw, main_h - top_h, GREEN, "newest first")
         o += side(left_box, box(rt_title, Rt, rw, main_h, MAG))

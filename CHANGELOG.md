@@ -4,7 +4,9 @@
 
 From cell01's move round trip (a4sx #2309 q, r):
 - **r (restore from a saved state)** lists the saved conversations newest first and marks this cell's own saves (`<cell>-backup`, `handoff-<cell>`) with ◆. When the cell's tab from before a herdr restart shows a bare shell prompt, it starts there instead of opening one more tab. It checks first that the cell isn't online on another host, as **s** and **n** do.
-- **A cell stored here that runs on another host** reads "● elsewhere now · stored here" instead of "◇ stored here" next to "● online".
+- **A cell stored here that runs on another host** reads "● elsewhere now · stored here" instead of "◇ stored here" next to "● online". Its details say "on another host now; stored on <this host> too" instead of "on <this host>", and view 5 lists it with the cells on other hosts.
+- **The messages panel** says "reading this host's delivery records …" until its first read is done (about a minute after the deck opens), not "no messages recorded on this host yet".
+- **m on a cell that runs here** shows that cell's own last deliveries, not "«cell» ↔ «cell»" and an old record of another cell stored here.
 
 ## 0.4.5 - 2026-11-22
 
