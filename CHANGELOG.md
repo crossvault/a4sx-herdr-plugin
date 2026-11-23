@@ -3,7 +3,7 @@
 ## 0.4.10 - 2026-11-23
 
 From cell01's Omarchy check of 0.4.9 (a4sx #2309 r):
-- **A running cell's folder** in the list and its details is where the cell works: a4sx's record of its last start (written at every start since a4sx 0.59.21), else the folder its launch runs in. Before, it was the folder of its tab's shell (e.g. ~/projects/omarchy-cell while the cell worked in ~/projects/demo). Restarting a running cell from a saved conversation uses the same folder, and so does the backup's transcript lookup.
+- **A running cell's folder** in the list and its details is where the cell works: the folder its launch runs in (on every a4sx), else a4sx's record of its last start. Before, it was the folder of its tab's shell (e.g. ~/projects/omarchy-cell while the cell worked in ~/projects/demo). Restarting a running cell from a saved conversation uses the same folder, and so does the backup's transcript lookup; the cell's own tab is reused when it shows a bare prompt, whichever folder its shell is in.
 
 ## 0.4.9 - 2026-11-22
 

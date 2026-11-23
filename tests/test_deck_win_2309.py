@@ -601,7 +601,7 @@ class Deck048(unittest.TestCase):
                     mock.patch.object(deck, "pane_is_idle_shell", lambda p: idle["v"] and p == "w1:p7"), \
                     mock.patch.object(deck, "run", lambda argv, *a, **k: idle.update(v=True) or (0, "", "")), \
                     mock.patch.object(deck.time, "sleep", lambda s: None), \
-                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(cwd=cwd, reuse=reuse) or "ok"):
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None, own=False: got.update(cwd=cwd, reuse=reuse) or "ok"):
                 ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
             # its own running tab (not the other «omarchy-cell» tab the deck recorded) and that tab's folder
             self.assertEqual(got, {"cwd": demo, "reuse": ("w1:p7", "w1:t7")})
@@ -701,15 +701,32 @@ class Deck0410(unittest.TestCase):
     def tearDown(self):
         mock.patch.stopall()
 
-    def test_running_cwd_prefers_the_record_then_the_launch_folder(self):
+    def test_running_cwd_prefers_the_live_launch_folder_then_the_record(self):
+        """Review of 0b003f2: an a4sx before 0.59.21 leaves a stale record; the launch's live folder wins."""
         import tempfile
-        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as old:
+            rec = os.path.join(st, "a4sx", "agents", "c1", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"cells": {"ins_A": {"cwd": old}}}, f)   # a stale record: an old restore's folder
             with mock.patch.object(deck, "STATE", st):
-                self.assertEqual(deck.running_cwd("c1", "ins_A", os.getpid()), os.getcwd())   # no record: /proc
-                rec = os.path.join(st, "a4sx", "agents", "c1", "state")
-                os.makedirs(rec)
-                with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
-                    json.dump({"cells": {"ins_A": {"cwd": demo}}}, f)
-                self.assertEqual(deck.running_cwd("c1", "ins_A", os.getpid()), demo)       # the record wins
-                self.assertIsNone(deck.running_cwd("c1", "ins_B", None))                  # nothing known
-                self.assertIsNone(deck.running_cwd("../x", "ins_A", None))                # not a cell name
+                live = os.path.realpath(os.getcwd())
+                self.assertEqual(deck.running_cwd("c1", "ins_A", os.getpid()), live)     # they disagree: live wins
+                self.assertEqual(deck.running_cwd("c1", "ins_A", None), old)            # no pid: the record
+                self.assertEqual(deck.running_cwd("c1", "ins_A", 999999999), old)       # an unreadable pid: the record
+                self.assertIsNone(deck.running_cwd("c1", "ins_B", None))                # nothing known
+                self.assertIsNone(deck.running_cwd("../x", "ins_A", None))              # not a cell name
+
+    def test_the_cells_own_pane_is_reused_by_prompt_not_by_folder(self):
+        ran = []
+        with mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                mock.patch.object(deck, "pane_is_idle_shell", lambda p: True), \
+                mock.patch.object(deck, "_pane_has_agent", lambda p: False), \
+                mock.patch.object(deck, "_pane_idle_in", lambda p, c: self.fail("folder-checked its own pane")), \
+                mock.patch.object(deck, "_remember_cell_pane", lambda *a: None), \
+                mock.patch.object(deck, "IN_HERDR", True), mock.patch.object(deck, "WIN", False), \
+                mock.patch.object(deck, "run", lambda argv, *a, **k: ran.append(argv) or (0, "", "")):
+            out = deck.new_tab("c1", "/nonexistent-deck-test/demo", ["a4sx", "launch", "--cell", "c1"], cell="c1",
+                               reuse=("w1:p7", "w1:t7"), own=True)
+        self.assertIn("ran the start in its tab «c1» again", out)
+        self.assertTrue(any(a[:3] == [deck.HERDR, "pane", "run"] and a[3] == "w1:p7" and "cd " in a[4] for a in ran), ran)

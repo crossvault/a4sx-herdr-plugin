@@ -236,18 +236,18 @@ def recorded_cwd(name, iid):
 
 
 def running_cwd(name, iid, pid):
-    """0.4.10: the folder a running cell works in: a4sx's record for it (recorded_cwd), else its launch process's
-    current folder (Linux /proc, own processes only); None when neither is known."""
-    got = recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
-    if got:
-        return got
+    """0.4.10: the folder a running cell works in. First its launch process's current folder (Linux /proc, own
+    processes only): the launch moves into the conversation's folder and Claude Code inherits it, on every a4sx.
+    Review: only then a4sx's record (recorded_cwd), which an a4sx before 0.59.21 doesn't write at every start, so it
+    can name an old folder. None when neither is known."""
     if isinstance(pid, int) and not isinstance(pid, bool) and pid > 1:
         try:
-            here = os.readlink(f"/proc/{pid}/cwd")
-            return here if os.path.isdir(here) else None
+            here = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+            if os.path.isdir(here):
+                return here
         except (OSError, ValueError):
-            return None
-    return None
+            pass
+    return recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
 
 
 def _pane_idle_in(pane, cwd):
@@ -426,7 +426,7 @@ def pane_is_idle_shell(pane):
     return _idle_shell_pid(pane) is not None
 
 
-def new_tab(label, cwd, argv, cell=None, reuse=None):
+def new_tab(label, cwd, argv, cell=None, reuse=None, own=False):
     """A new herdr tab running argv. `cell`: a cell's start: its name must follow the CLI's rule, and its pane is
     remembered for the next time. `reuse`: (pane, tab) of the cell's leftover shell from before a herdr restart, which
     herdr's process-info shows as a bare shell prompt, or the person said is one (pane_is_idle_shell can't tell); it is
@@ -458,7 +458,10 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
         return f"a backslash or line break in the folder or the command can't be typed into herdr's shell safely, so nothing was started: {shown}"
     old = _leftover_pane(cell) if (cell and reuse) else None
     if reuse and not (old and tuple(old) == tuple(reuse)):   # 0.4.7/0.4.8: or that very pane, an idle shell in cwd
-        old = tuple(reuse) if _pane_idle_in(reuse[0], cwd) else None
+        # 0.4.10 (review): the cell's provably own pane (its launch ran in it) only needs a bare prompt and no agent;
+        # its shell sits in the tab's folder, not the cell's work folder, and `cd` comes first in the typed line
+        ok = (pane_is_idle_shell(reuse[0]) and not _pane_has_agent(reuse[0])) if own else _pane_idle_in(reuse[0], cwd)
+        old = tuple(reuse) if ok else None
     if old and tuple(old) == tuple(reuse):
         pane, tab = old
         # follow-up (c): a half-typed line would prefix the start line; ctrl+u clears it, sent only when herdr's
@@ -1150,7 +1153,7 @@ class Deck:
                 if own:   # 0.4.8: its own tab, a bare prompt once the stop has ended the launch (review: a few seconds)
                     for _ in range(5):
                         if pane_is_idle_shell(own[0]):
-                            return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=own)]
+                            return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=own, own=True)]
                         time.sleep(1)
                 old = _leftover_pane(r["name"]) if ok_name and not asked and not own else None
                 if old and pane_is_idle_shell(old[0]):
