@@ -588,6 +588,7 @@ class Deck048(unittest.TestCase):
 
             def running_now(name, iid=None):
                 ui.__dict__.setdefault("run_cwd", {})[name] = demo
+                ui.__dict__.setdefault("run_by", {})[name] = "pid"   # found by its launch's process
                 return "w1:p7"
             ui.running_now = running_now
             idle = {"v": False}
@@ -730,3 +731,26 @@ class Deck0410(unittest.TestCase):
                                reuse=("w1:p7", "w1:t7"), own=True)
         self.assertIn("ran the start in its tab «c1» again", out)
         self.assertTrue(any(a[:3] == [deck.HERDR, "pane", "run"] and a[3] == "w1:p7" and "cd " in a[4] for a in ran), ran)
+
+    def test_a_folder_only_running_pane_is_never_the_cells_own(self):
+        """Review of d54585f: running_now's folder-name fallback (the cell runs outside herdr, the person has a
+        Claude Code pane in ~/projects/<cell>) must never become own=True."""
+        ui, _seen = _ui([_row("c1", here=True, running=True)])
+        ui.d.refresh = lambda what: None
+
+        def running_now(name, iid=None):
+            ui.__dict__.setdefault("run_by", {})[name] = "folder"
+            ui.__dict__.setdefault("run_cwd", {})[name] = "/nonexistent-deck-test/c1"
+            return "w1:p9"
+        ui.running_now = running_now
+        calls = []
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"panes": [{"pane_id": "w1:p9", "tab_id": "w1:t9"}]}}), \
+                mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None, skip_pane=None: None), \
+                mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                mock.patch.object(deck, "run", lambda argv, *a, **k: (0, "", "")), \
+                mock.patch.object(deck.time, "sleep", lambda s: None), \
+                mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None, own=False: calls.append((reuse, own)) or "ok"):
+            ui.start_seeded({"name": "c1", "iid": "ins_A", "running": True}, "x")
+        self.assertEqual(calls, [(None, False)])
+

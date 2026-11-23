@@ -1132,7 +1132,9 @@ class Deck:
             own = None
             if r["running"] and ok_name:
                 pane = self.running_now(r["name"], r.get("iid"))
-                if pane:
+                # review (0.4.10): only a pane found by the launch's own process is the cell's tab; a folder-name
+                # match can be the person's own Claude Code pane, which is never stopped into or typed into unasked
+                if pane and (self.__dict__.get("run_by") or {}).get(r["name"]) == "pid":
                     tab = next((p.get("tab_id") for p in (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
                                 if p.get("pane_id") == pane), None)
                     own = (pane, tab) if tab else None
@@ -1302,7 +1304,11 @@ class Deck:
         # 0.4.8 (cell01): the pane its launch runs in, by its process, before a folder named like the cell
         pp = pane_of_pid((c.get("local") or {}).get("pid"), agents) if IN_HERDR else None
         a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
-        a = a or next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+        # review (0.4.10): how the pane was found: only "pid" is provably the cell's own
+        self.__dict__.setdefault("run_by", {})[name] = "pid" if a else None
+        if a is None:
+            a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+            self.run_by[name] = "folder" if a else None
         # 0.4.10: where the cell works (a4sx's record or the launch's folder), not the pane's shell folder
         self.__dict__.setdefault("run_cwd", {})[name] = running_cwd(name, iid or c.get("instance_id"), (c.get("local") or {}).get("pid")) or (a or {}).get("cwd")
         return (a or {}).get("pane_id") or ""
