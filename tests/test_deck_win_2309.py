@@ -693,3 +693,23 @@ class Deck049(unittest.TestCase):
         d.refresh("server")   # a due refresh still skips while one runs
         self.assertEqual(seen, ["server"])
         d.busy.release()
+
+
+class Deck0410(unittest.TestCase):
+    """0.4.10, cell01: a running row shows where the cell works, not its tab's shell folder."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_running_cwd_prefers_the_record_then_the_launch_folder(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as demo:
+            with mock.patch.object(deck, "STATE", st):
+                self.assertEqual(deck.running_cwd("c1", "ins_A", os.getpid()), os.getcwd())   # no record: /proc
+                rec = os.path.join(st, "a4sx", "agents", "c1", "state")
+                os.makedirs(rec)
+                with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                    json.dump({"cells": {"ins_A": {"cwd": demo}}}, f)
+                self.assertEqual(deck.running_cwd("c1", "ins_A", os.getpid()), demo)       # the record wins
+                self.assertIsNone(deck.running_cwd("c1", "ins_B", None))                  # nothing known
+                self.assertIsNone(deck.running_cwd("../x", "ins_A", None))                # not a cell name

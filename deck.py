@@ -235,6 +235,21 @@ def recorded_cwd(name, iid):
     return cwd if isinstance(cwd, str) and os.path.isabs(cwd) and os.path.isdir(cwd) else None
 
 
+def running_cwd(name, iid, pid):
+    """0.4.10: the folder a running cell works in: a4sx's record for it (recorded_cwd), else its launch process's
+    current folder (Linux /proc, own processes only); None when neither is known."""
+    got = recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
+    if got:
+        return got
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 1:
+        try:
+            here = os.readlink(f"/proc/{pid}/cwd")
+            return here if os.path.isdir(here) else None
+        except (OSError, ValueError):
+            return None
+    return None
+
+
 def _pane_idle_in(pane, cwd):
     """0.4.8: `pane` shows a bare shell prompt in `cwd` (its shell's /proc/<pid>/cwd) and has no agent. Linux only."""
     pid = _idle_shell_pid(pane) if isinstance(pane, str) else None
@@ -846,6 +861,9 @@ class Data:
                     by = "folder" if a else None
                 if a:
                     pane, state, cwd = a.get("pane_id"), a.get("agent_status"), a.get("cwd")
+                # 0.4.10 (cell01): where the cell works, not its tab's shell folder: a4sx's record (written at every
+                # start since a4sx 0.59.21), else the launch's own folder (/proc), else the pane's
+                cwd = running_cwd(name, iid, (c.get("local") or {}).get("pid")) or cwd
             elif c:   # 0.4.9 (cell01): a cell that doesn't run shows the folder its last session ran in (a4sx's record)
                 cwd = recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
             return {"name": name, "iid": iid, "presence": presence or "?", "owner": m.get("display_name") or "?", "mine": bool(own) if own is not None else (bool(m) and m is me),
@@ -1282,7 +1300,8 @@ class Deck:
         pp = pane_of_pid((c.get("local") or {}).get("pid"), agents) if IN_HERDR else None
         a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
         a = a or next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
-        self.__dict__.setdefault("run_cwd", {})[name] = (a or {}).get("cwd")
+        # 0.4.10: where the cell works (a4sx's record or the launch's folder), not the pane's shell folder
+        self.__dict__.setdefault("run_cwd", {})[name] = running_cwd(name, iid or c.get("instance_id"), (c.get("local") or {}).get("pid")) or (a or {}).get("cwd")
         return (a or {}).get("pane_id") or ""
 
     def already_running(self, name, pane):
