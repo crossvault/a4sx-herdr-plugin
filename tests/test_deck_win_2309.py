@@ -588,6 +588,7 @@ class Deck048(unittest.TestCase):
 
             def running_now(name, iid=None):
                 ui.__dict__.setdefault("run_cwd", {})[name] = demo
+                ui.__dict__.setdefault("run_by", {})[name] = "pid"   # found by its launch's process
                 return "w1:p7"
             ui.running_now = running_now
             idle = {"v": False}
@@ -601,7 +602,7 @@ class Deck048(unittest.TestCase):
                     mock.patch.object(deck, "pane_is_idle_shell", lambda p: idle["v"] and p == "w1:p7"), \
                     mock.patch.object(deck, "run", lambda argv, *a, **k: idle.update(v=True) or (0, "", "")), \
                     mock.patch.object(deck.time, "sleep", lambda s: None), \
-                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None: got.update(cwd=cwd, reuse=reuse) or "ok"):
+                    mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None, own=False: got.update(cwd=cwd, reuse=reuse) or "ok"):
                 ui.start_seeded({"name": "omarchy-cell", "iid": "ins_A", "running": True}, "x")
             # its own running tab (not the other «omarchy-cell» tab the deck recorded) and that tab's folder
             self.assertEqual(got, {"cwd": demo, "reuse": ("w1:p7", "w1:t7")})
@@ -693,3 +694,63 @@ class Deck049(unittest.TestCase):
         d.refresh("server")   # a due refresh still skips while one runs
         self.assertEqual(seen, ["server"])
         d.busy.release()
+
+
+class Deck0410(unittest.TestCase):
+    """0.4.10, cell01: a running row shows where the cell works, not its tab's shell folder."""
+
+    def tearDown(self):
+        mock.patch.stopall()
+
+    def test_running_cwd_prefers_the_live_launch_folder_then_the_record(self):
+        """Review of 0b003f2: an a4sx before 0.59.21 leaves a stale record; the launch's live folder wins."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as st, tempfile.TemporaryDirectory() as old:
+            rec = os.path.join(st, "a4sx", "agents", "c1", "state")
+            os.makedirs(rec)
+            with open(os.path.join(rec, "cell-last-session.json"), "w", encoding="utf-8") as f:
+                json.dump({"cells": {"ins_A": {"cwd": old}}}, f)   # a stale record: an old restore's folder
+            with mock.patch.object(deck, "STATE", st):
+                live = os.path.realpath(os.getcwd())
+                self.assertEqual(deck.running_cwd("c1", "ins_A", os.getpid()), live)     # they disagree: live wins
+                self.assertEqual(deck.running_cwd("c1", "ins_A", None), old)            # no pid: the record
+                self.assertEqual(deck.running_cwd("c1", "ins_A", 999999999), old)       # an unreadable pid: the record
+                self.assertIsNone(deck.running_cwd("c1", "ins_B", None))                # nothing known
+                self.assertIsNone(deck.running_cwd("../x", "ins_A", None))              # not a cell name
+
+    def test_the_cells_own_pane_is_reused_by_prompt_not_by_folder(self):
+        ran = []
+        with mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                mock.patch.object(deck, "pane_is_idle_shell", lambda p: True), \
+                mock.patch.object(deck, "_pane_has_agent", lambda p: False), \
+                mock.patch.object(deck, "_pane_idle_in", lambda p, c: self.fail("folder-checked its own pane")), \
+                mock.patch.object(deck, "_remember_cell_pane", lambda *a: None), \
+                mock.patch.object(deck, "IN_HERDR", True), mock.patch.object(deck, "WIN", False), \
+                mock.patch.object(deck, "run", lambda argv, *a, **k: ran.append(argv) or (0, "", "")):
+            out = deck.new_tab("c1", "/nonexistent-deck-test/demo", ["a4sx", "launch", "--cell", "c1"], cell="c1",
+                               reuse=("w1:p7", "w1:t7"), own=True)
+        self.assertIn("ran the start in its tab «c1» again", out)
+        self.assertTrue(any(a[:3] == [deck.HERDR, "pane", "run"] and a[3] == "w1:p7" and "cd " in a[4] for a in ran), ran)
+
+    def test_a_folder_only_running_pane_is_never_the_cells_own(self):
+        """Review of d54585f: running_now's folder-name fallback (the cell runs outside herdr, the person has a
+        Claude Code pane in ~/projects/<cell>) must never become own=True."""
+        ui, _seen = _ui([_row("c1", here=True, running=True)])
+        ui.d.refresh = lambda what: None
+
+        def running_now(name, iid=None):
+            ui.__dict__.setdefault("run_by", {})[name] = "folder"
+            ui.__dict__.setdefault("run_cwd", {})[name] = "/nonexistent-deck-test/c1"
+            return "w1:p9"
+        ui.running_now = running_now
+        calls = []
+        with mock.patch.object(deck, "jrun", lambda argv, t=30: {"result": {"panes": [{"pane_id": "w1:p9", "tab_id": "w1:t9"}]}}), \
+                mock.patch.object(deck, "_leftover_pane", lambda c: None), \
+                mock.patch.object(deck, "_pane_in_folder", lambda cwd, skip=None, skip_pane=None: None), \
+                mock.patch.object(deck, "deck_state", lambda: ("w1:p1", "w1:t1", True)), \
+                mock.patch.object(deck, "run", lambda argv, *a, **k: (0, "", "")), \
+                mock.patch.object(deck.time, "sleep", lambda s: None), \
+                mock.patch.object(deck, "new_tab", lambda label, cwd, argv, cell=None, reuse=None, own=False: calls.append((reuse, own)) or "ok"):
+            ui.start_seeded({"name": "c1", "iid": "ins_A", "running": True}, "x")
+        self.assertEqual(calls, [(None, False)])
+

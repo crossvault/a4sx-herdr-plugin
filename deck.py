@@ -235,6 +235,21 @@ def recorded_cwd(name, iid):
     return cwd if isinstance(cwd, str) and os.path.isabs(cwd) and os.path.isdir(cwd) else None
 
 
+def running_cwd(name, iid, pid):
+    """0.4.10: the folder a running cell works in. First its launch process's current folder (Linux /proc, own
+    processes only): the launch moves into the conversation's folder and Claude Code inherits it, on every a4sx.
+    Review: only then a4sx's record (recorded_cwd), which an a4sx before 0.59.21 doesn't write at every start, so it
+    can name an old folder. None when neither is known."""
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 1:
+        try:
+            here = os.path.realpath(os.readlink(f"/proc/{pid}/cwd"))
+            if os.path.isdir(here):
+                return here
+        except (OSError, ValueError):
+            pass
+    return recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
+
+
 def _pane_idle_in(pane, cwd):
     """0.4.8: `pane` shows a bare shell prompt in `cwd` (its shell's /proc/<pid>/cwd) and has no agent. Linux only."""
     pid = _idle_shell_pid(pane) if isinstance(pane, str) else None
@@ -411,7 +426,7 @@ def pane_is_idle_shell(pane):
     return _idle_shell_pid(pane) is not None
 
 
-def new_tab(label, cwd, argv, cell=None, reuse=None):
+def new_tab(label, cwd, argv, cell=None, reuse=None, own=False):
     """A new herdr tab running argv. `cell`: a cell's start: its name must follow the CLI's rule, and its pane is
     remembered for the next time. `reuse`: (pane, tab) of the cell's leftover shell from before a herdr restart, which
     herdr's process-info shows as a bare shell prompt, or the person said is one (pane_is_idle_shell can't tell); it is
@@ -443,7 +458,10 @@ def new_tab(label, cwd, argv, cell=None, reuse=None):
         return f"a backslash or line break in the folder or the command can't be typed into herdr's shell safely, so nothing was started: {shown}"
     old = _leftover_pane(cell) if (cell and reuse) else None
     if reuse and not (old and tuple(old) == tuple(reuse)):   # 0.4.7/0.4.8: or that very pane, an idle shell in cwd
-        old = tuple(reuse) if _pane_idle_in(reuse[0], cwd) else None
+        # 0.4.10 (review): the cell's provably own pane (its launch ran in it) only needs a bare prompt and no agent;
+        # its shell sits in the tab's folder, not the cell's work folder, and `cd` comes first in the typed line
+        ok = (pane_is_idle_shell(reuse[0]) and not _pane_has_agent(reuse[0])) if own else _pane_idle_in(reuse[0], cwd)
+        old = tuple(reuse) if ok else None
     if old and tuple(old) == tuple(reuse):
         pane, tab = old
         # follow-up (c): a half-typed line would prefix the start line; ctrl+u clears it, sent only when herdr's
@@ -846,6 +864,9 @@ class Data:
                     by = "folder" if a else None
                 if a:
                     pane, state, cwd = a.get("pane_id"), a.get("agent_status"), a.get("cwd")
+                # 0.4.10 (cell01): where the cell works, not its tab's shell folder: a4sx's record (written at every
+                # start since a4sx 0.59.21), else the launch's own folder (/proc), else the pane's
+                cwd = running_cwd(name, iid, (c.get("local") or {}).get("pid")) or cwd
             elif c:   # 0.4.9 (cell01): a cell that doesn't run shows the folder its last session ran in (a4sx's record)
                 cwd = recorded_cwd(name, iid) if CELL_NAME_RE.fullmatch(str(name or "")) else None
             return {"name": name, "iid": iid, "presence": presence or "?", "owner": m.get("display_name") or "?", "mine": bool(own) if own is not None else (bool(m) and m is me),
@@ -1111,7 +1132,9 @@ class Deck:
             own = None
             if r["running"] and ok_name:
                 pane = self.running_now(r["name"], r.get("iid"))
-                if pane:
+                # review (0.4.10): only a pane found by the launch's own process is the cell's tab; a folder-name
+                # match can be the person's own Claude Code pane, which is never stopped into or typed into unasked
+                if pane and (self.__dict__.get("run_by") or {}).get(r["name"]) == "pid":
                     tab = next((p.get("tab_id") for p in (jrun([HERDR, "pane", "list"], 8).get("result") or {}).get("panes") or []
                                 if p.get("pane_id") == pane), None)
                     own = (pane, tab) if tab else None
@@ -1132,7 +1155,7 @@ class Deck:
                 if own:   # 0.4.8: its own tab, a bare prompt once the stop has ended the launch (review: a few seconds)
                     for _ in range(5):
                         if pane_is_idle_shell(own[0]):
-                            return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=own)]
+                            return res + [new_tab(r["name"], cwd, argv, cell=r["name"], reuse=own, own=True)]
                         time.sleep(1)
                 old = _leftover_pane(r["name"]) if ok_name and not asked and not own else None
                 if old and pane_is_idle_shell(old[0]):
@@ -1281,8 +1304,13 @@ class Deck:
         # 0.4.8 (cell01): the pane its launch runs in, by its process, before a folder named like the cell
         pp = pane_of_pid((c.get("local") or {}).get("pid"), agents) if IN_HERDR else None
         a = next((x for x in agents if x.get("pane_id") == pp), None) if pp else None
-        a = a or next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
-        self.__dict__.setdefault("run_cwd", {})[name] = (a or {}).get("cwd")
+        # review (0.4.10): how the pane was found: only "pid" is provably the cell's own
+        self.__dict__.setdefault("run_by", {})[name] = "pid" if a else None
+        if a is None:
+            a = next((x for x in agents if os.path.basename((x.get("cwd") or "").rstrip("/")) == name), None)
+            self.run_by[name] = "folder" if a else None
+        # 0.4.10: where the cell works (a4sx's record or the launch's folder), not the pane's shell folder
+        self.__dict__.setdefault("run_cwd", {})[name] = running_cwd(name, iid or c.get("instance_id"), (c.get("local") or {}).get("pid")) or (a or {}).get("cwd")
         return (a or {}).get("pane_id") or ""
 
     def already_running(self, name, pane):
