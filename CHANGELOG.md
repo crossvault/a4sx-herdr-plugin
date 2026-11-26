@@ -4,7 +4,7 @@
 
 **The deck in VS Code** (the a4sx extension's "Open deck", a4sx 11-21 backlog):
 - Started with `A4SX_DECK_HOST=vscode` and the extension's channel folder and nonce (`A4SX_DECK_CHANNEL`, `A4SX_DECK_NONCE`), the deck doesn't open terminals itself. A cell start (s, n, r, bring here, a first cell, resume natively) writes one request file into that folder, and the extension opens a VS Code terminal «a4sx: <name>» for it after its own check. The result line says "asked VS Code to open the terminal «a4sx: <name>» (it shows the outcome)".
-- Only these starts go to VS Code: `a4sx launch` with `--cell [<cell>]`, `--new-session`, `--a4sx-session <saved>`, in the shapes the deck sends, with plain names. Everything else (rename, delete, traffic rules, the agent host) shows the command to run by hand, as in a plain terminal.
+- Only these starts go to VS Code: `a4sx launch` with `--cell [<cell>]`, `--new-session`, `--a4sx-session <saved>`, in the shapes the deck sends, with plain names. Everything else (rename, delete, traffic rules, the agent host) shows the command to run by hand, as in a plain terminal. So does a start in a folder that VS Code doesn't start cells in: outside your home folder and the window's workspace folders, or one every user can write to.
 - The channel and the nonce leave the deck's environment as it starts, so the a4sx commands it runs don't get them. herdr's variables that VS Code passes on to its terminals (VS Code started from a herdr pane) don't make it a herdr deck.
 
 ## 0.4.10 - 2026-11-23

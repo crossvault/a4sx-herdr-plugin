@@ -28,7 +28,8 @@ class VSCodeHost(unittest.TestCase):
         os.mkdir(self.chan, 0o700)
         self.work = os.path.join(self.tmp.name, "work")
         self.deck, self.left = _load({"A4SX_DECK_HOST": "vscode", "A4SX_DECK_CHANNEL": self.chan,
-                                      "A4SX_DECK_NONCE": NONCE, "HERDR_PANE_ID": "p_1"})
+                                      "A4SX_DECK_NONCE": NONCE, "HERDR_PANE_ID": "p_1",
+                                      "A4SX_DECK_FOLDERS": os.path.realpath(self.tmp.name)})   # a workspace folder
         self.cli = list(self.deck.A4SX_ARGV)
         never = lambda *a, **k: self.fail(f"the deck itself ran something: {a}")   # noqa: E731
         for p in (mock.patch.object(self.deck.subprocess, "Popen", never), mock.patch.object(self.deck, "run", never),
@@ -46,7 +47,8 @@ class VSCodeHost(unittest.TestCase):
         self.assertTrue(self.deck.VSCODE)
         self.assertFalse(self.deck.IN_HERDR)                  # herdr's variables passed on by VS Code don't count
         self.assertEqual(self.deck.FRONT, "VS Code")
-        self.assertEqual(self.left, {"A4SX_DECK_CHANNEL": None, "A4SX_DECK_NONCE": None})   # its a4sx calls don't get them
+        self.assertEqual(self.left, {"A4SX_DECK_CHANNEL": None, "A4SX_DECK_NONCE": None})
+        self.assertEqual(self.deck._VSC_FOLDERS, [os.path.realpath(self.tmp.name)])   # its a4sx calls don't get them
 
     def test_every_start_the_deck_sends_is_one_request(self):
         shapes = [["launch", "--cell", "bob-cell"], ["launch", "--cell", "bob-cell", "--new-session"],
@@ -78,6 +80,23 @@ class VSCodeHost(unittest.TestCase):
         self.assertIn("run this in a terminal", self.deck.new_tab("x", self.work + "\nx", [*self.cli, "launch", "--cell"]))
         self.assertEqual(self.reqs(), [])
 
+    def test_a_folder_vscode_would_refuse_is_shown_to_run_by_hand(self):
+        """follow-up (c): outside the home folder and the workspace folders, or writable by every user"""
+        other = tempfile.mkdtemp()
+        self.addCleanup(os.rmdir, other)
+        self.assertIn("run this in a terminal", self.deck.new_tab("x", other, [*self.cli, "launch", "--cell"]))
+        if os.name != "nt":
+            os.makedirs(self.work)
+            os.chmod(self.work, 0o777)
+            self.assertIn("run this in a terminal", self.deck.new_tab("x", self.work, [*self.cli, "launch", "--cell"]))
+            os.chmod(self.work, 0o700)
+            link = os.path.join(self.tmp.name, "out")
+            os.symlink(other, link)
+            self.assertIn("run this in a terminal", self.deck.new_tab("x", link, [*self.cli, "launch", "--cell"]))
+        self.assertEqual(self.reqs(), [])
+        self.assertTrue(self.deck.vscode_folder_ok(os.path.expanduser("~")))
+        self.assertTrue(self.deck.new_tab("x", self.work, [*self.cli, "launch", "--cell"]).startswith("asked VS Code"))
+
     def test_the_label_is_plain_and_short(self):
         self.deck.new_tab("\x1b[31mred\x1b[0m\x07" + "y" * 80, self.work, [*self.cli, "launch", "--cell", "a"])
         self.assertEqual(self.reqs()[0]["label"], "red" + "y" * 37)
@@ -90,8 +109,8 @@ class VSCodeHost(unittest.TestCase):
         self.assertEqual(self.reqs(), [])
 
     def test_a_channel_that_is_gone_is_said(self):
-        self.tmp.cleanup()
-        out = self.deck.new_tab("a", os.path.join(tempfile.gettempdir(), "deck-vsc-w"), [*self.cli, "launch", "--cell", "a"])
+        os.rmdir(self.chan)
+        out = self.deck.new_tab("a", self.work, [*self.cli, "launch", "--cell", "a"])
         self.assertIn("could not ask VS Code to open a terminal for: a4sx launch --cell a (", out)
 
 
