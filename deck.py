@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""a4sx deck 0.6 (prototype): the mesh, its cells and your library in one herdr pane.
+"""a4sx deck 0.6 (prototype): the mesh, its cells and your library in one herdr pane (or a VS Code terminal).
 
 Views (keys 1-5): mesh, library, rules, host, move. The selected row's operations are always shown on the right and
 run with one key. Short commands run in place; anything a person answers (or that opens the browser) runs in a new
@@ -37,8 +37,16 @@ except ImportError:   # Windows: keys come from msvcrt
 WIN = os.name == "nt"
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
 #: inside a herdr pane the deck uses herdr (tabs, panes, agent states); elsewhere it is a plain terminal program
-IN_HERDR = bool(os.environ.get("HERDR_SOCKET_PATH") or os.environ.get("HERDR_PANE_ID"))
-FRONT = "herdr" if IN_HERDR else ("Windows terminal" if WIN else "terminal")
+#: 0.5.0: the deck in the a4sx VS Code extension's "a4sx deck" terminal. A start there is a request to the extension,
+#: which checks it again (its check is the one that counts) and opens a VS Code terminal for it. The channel folder and
+#: the nonce are in this terminal's environment only; they leave os.environ here, so the deck's own a4sx calls don't
+#: inherit them.
+_VSC_CHANNEL = os.environ.pop("A4SX_DECK_CHANNEL", "")
+_VSC_NONCE = os.environ.pop("A4SX_DECK_NONCE", "")
+VSCODE = os.environ.get("A4SX_DECK_HOST") == "vscode" and bool(_VSC_CHANNEL) and bool(_VSC_NONCE)
+#: VS Code started from a herdr pane passes herdr's variables on to its terminals; the extension's deck is not in herdr
+IN_HERDR = not VSCODE and bool(os.environ.get("HERDR_SOCKET_PATH") or os.environ.get("HERDR_PANE_ID"))
+FRONT = "herdr" if IN_HERDR else ("VS Code" if VSCODE else ("Windows terminal" if WIN else "terminal"))
 
 
 def _a4sx_argv():
@@ -426,6 +434,53 @@ def pane_is_idle_shell(pane):
     return _idle_shell_pid(pane) is not None
 
 
+#: the names a VS Code request may carry for a saved conversation: plain, so no shell or terminal reads them otherwise
+VSC_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+#: the starts VS Code runs for the deck (the extension checks the same): the flags of `a4sx launch` it sends
+VSC_SHAPES = (frozenset({"--cell"}), frozenset({"--cell", "--new-session"}), frozenset({"--cell", "--a4sx-session"}),
+              frozenset({"--a4sx-session"}))
+
+
+def vscode_request_args(rest):
+    """`rest`: the a4sx arguments of a start. The same arguments when VS Code runs that shape for the deck: `launch`
+    with --cell [<cell>], --new-session, --a4sx-session <saved>, each once, in a shape the deck sends. None for
+    anything else (it is shown to run by hand)."""
+    if not isinstance(rest, list) or not rest or rest[0] != "launch":
+        return None
+    seen, i = set(), 1
+    while i < len(rest):
+        a = rest[i]
+        if not isinstance(a, str) or a in seen or a not in ("--cell", "--new-session", "--a4sx-session"):
+            return None
+        seen.add(a)
+        nxt = rest[i + 1] if i + 1 < len(rest) else None
+        if a == "--cell" and isinstance(nxt, str) and not nxt.startswith("-"):
+            if not CELL_NAME_RE.fullmatch(nxt):
+                return None
+            i += 2
+        elif a == "--a4sx-session":
+            if not (isinstance(nxt, str) and VSC_NAME_RE.fullmatch(nxt)):
+                return None
+            i += 2
+        else:
+            i += 1
+    return list(rest) if frozenset(seen) in VSC_SHAPES else None
+
+
+def vscode_request(label, cwd, rest):
+    """One request file in the extension's channel folder, written whole before it appears (the extension reads,
+    deletes and checks it)."""
+    label = "".join(ch for ch in ANSI.sub("", str(label)) if ch.isprintable())[:40] or "a4sx"
+    req = {"v": 1, "nonce": _VSC_NONCE, "label": label, "cwd": os.path.abspath(cwd), "args": rest}
+    name = f"req-{time.time_ns()}-{os.getpid()}.json"
+    tmp = os.path.join(_VSC_CHANNEL, "." + name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(req, f)
+    os.replace(tmp, os.path.join(_VSC_CHANNEL, name))
+    return label
+
+
 def new_tab(label, cwd, argv, cell=None, reuse=None, own=False):
     """A new herdr tab running argv. `cell`: a cell's start: its name must follow the CLI's rule, and its pane is
     remembered for the next time. `reuse`: (pane, tab) of the cell's leftover shell from before a herdr restart, which
@@ -436,6 +491,15 @@ def new_tab(label, cwd, argv, cell=None, reuse=None, own=False):
         return f"«{ANSI.sub('', str(cell))[:64]}» isn't a cell name a4sx takes, so nothing was started"
     os.makedirs(cwd, exist_ok=True)
     shown = ("a4sx " + " ".join(argv[len(A4SX_ARGV):])) if argv[:len(A4SX_ARGV)] == A4SX_ARGV else " ".join(argv)
+    if VSCODE:   # 0.5.0: a VS Code terminal, opened by the extension; anything else is shown to run by hand
+        rest = vscode_request_args(argv[len(A4SX_ARGV):]) if argv[:len(A4SX_ARGV)] == A4SX_ARGV else None
+        if rest is None or any(c in cwd for c in "\0\n\r"):
+            return f"run this in a terminal, in {cwd}:  {shown}"
+        try:
+            label = vscode_request(label, cwd, rest)
+        except OSError as e:
+            return f"could not ask VS Code to open a terminal for: {shown} ({e.__class__.__name__})"
+        return f"asked VS Code to open the terminal «a4sx: {label}» (it shows the outcome): {shown}"
     if not IN_HERDR:
         if not WIN:
             return f"run this in a terminal, in {cwd}:  {shown}"

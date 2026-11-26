@@ -53,6 +53,8 @@ herdr plugin action invoke a4sx.mesh.menu
 
 If you linked a clone, run `herdr plugin link` on the folder again after you update it. To remove a linked plugin: `herdr plugin unlink a4sx.mesh`.
 
+**In VS Code (0.5.0).** The a4sx extension's "Open deck" runs this same deck in a VS Code terminal. A cell start there opens a VS Code terminal: the deck writes one request into a private folder the extension made for it, and the extension checks it again and runs only `a4sx launch` with `--cell`, `--new-session` or `--a4sx-session`. Anything else the deck shows as a command to run by hand.
+
 ## What the menu does
 
 | Choice | What happens |
