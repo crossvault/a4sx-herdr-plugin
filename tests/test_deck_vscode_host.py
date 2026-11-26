@@ -81,6 +81,13 @@ class VSCodeHost(unittest.TestCase):
     def test_the_label_is_plain_and_short(self):
         self.deck.new_tab("\x1b[31mred\x1b[0m\x07" + "y" * 80, self.work, [*self.cli, "launch", "--cell", "a"])
         self.assertEqual(self.reqs()[0]["label"], "red" + "y" * 37)
+        self.deck.new_tab("ev\u202eil\u200b-ok", self.work, [*self.cli, "launch", "--cell", "a"])
+        self.assertEqual(self.reqs()[1]["label"], "evil-ok")      # review: no right-to-left or zero-width characters
+
+    def test_a_folder_with_a_format_or_control_character_is_shown_to_run_by_hand(self):
+        for bad in ("\t", "\u202e", "\u200b", "\u2028", "\x85"):
+            self.assertIn("run this in a terminal", self.deck.new_tab("x", self.work + bad, [*self.cli, "launch", "--cell"]))
+        self.assertEqual(self.reqs(), [])
 
     def test_a_channel_that_is_gone_is_said(self):
         self.tmp.cleanup()
