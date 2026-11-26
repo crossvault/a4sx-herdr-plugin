@@ -29,7 +29,8 @@ class VSCodeHost(unittest.TestCase):
         self.work = os.path.join(self.tmp.name, "work")
         self.deck, self.left = _load({"A4SX_DECK_HOST": "vscode", "A4SX_DECK_CHANNEL": self.chan,
                                       "A4SX_DECK_NONCE": NONCE, "HERDR_PANE_ID": "p_1",
-                                      "A4SX_DECK_FOLDERS": os.path.realpath(self.tmp.name)})   # a workspace folder
+                                      "A4SX_DECK_FOLDERS": json.dumps([os.path.realpath(self.tmp.name)]),   # a workspace folder
+                                      "A4SX_DECK_ROOT": os.path.join(self.tmp.name, "store", "deck")})
         self.cli = list(self.deck.A4SX_ARGV)
         never = lambda *a, **k: self.fail(f"the deck itself ran something: {a}")   # noqa: E731
         for p in (mock.patch.object(self.deck.subprocess, "Popen", never), mock.patch.object(self.deck, "run", never),
@@ -94,6 +95,9 @@ class VSCodeHost(unittest.TestCase):
             os.symlink(other, link)
             self.assertIn("run this in a terminal", self.deck.new_tab("x", link, [*self.cli, "launch", "--cell"]))
         self.assertEqual(self.reqs(), [])
+        os.makedirs(os.path.join(self.tmp.name, "store", "deck"), exist_ok=True)
+        for above in (self.tmp.name, os.path.join(self.tmp.name, "store"), os.path.join(self.tmp.name, "store", "deck")):
+            self.assertFalse(self.deck.vscode_folder_ok(above), above)   # the channels' folder is in it or it is that
         self.assertTrue(self.deck.vscode_folder_ok(os.path.expanduser("~")))
         self.assertTrue(self.deck.new_tab("x", self.work, [*self.cli, "launch", "--cell"]).startswith("asked VS Code"))
 
