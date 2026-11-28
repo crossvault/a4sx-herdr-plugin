@@ -1,17 +1,23 @@
 # a4sx for herdr
 
-A [herdr](https://herdr.dev) plugin for [a4sx](https://session-exchange.com) meshes. One key opens a small menu:
+A [herdr](https://herdr.dev) plugin for [a4sx](https://session-exchange.com) meshes. At its centre is the **deck**, one
+view of your a4sx world with each selected row's operations one key away (keys 1 to 5 switch views):
 
-1. start one of your a4sx cells in a new pane,
-2. show the peers of your meshes,
-3. join a mesh from an invitation link.
+1. **mesh**: your mesh and its cells, on this host and the others;
+2. **library**: your saved conversations;
+3. **rules**: the mesh's rules for who may message whom;
+4. **host**: the cells on this computer;
+5. **move**: bringing a cell's saved conversation from another host to this one.
 
-Version 0.3.1, early. Made by crossVault GmbH, the company behind a4sx. Not affiliated with herdr.
+The deck opens by itself when a herdr session starts. A small menu on one key starts a cell in a new pane, shows the
+peers of your meshes and joins a mesh from an invitation link.
+
+Version 0.5.0. Made by crossVault GmbH, the company behind a4sx. Not affiliated with herdr.
 
 ## What you need
 
 - Linux, or WSL on Windows. This plugin does not support macOS yet.
-- herdr 0.9.1 or newer. Omarchy 4.5.0 ships 0.9.1.
+- herdr 0.9.5 or newer (the deck's start hook needs it).
 - Python 3 as `python3`.
 - Claude Code, started once so you are signed in.
 - The a4sx CLI, signed in with `a4sx login`, and at least one cell on this machine. The guide is at https://session-exchange.com/guide/meshes.
@@ -27,7 +33,7 @@ To pin a version, give `--ref` a branch, a tag or the FULL commit id: herdr hand
 
 herdr shows what the plugin declares and asks before it installs. Over SSH, with no terminal to answer in (`herdr --remote … plugin install`), add `--yes`. The second command lists six actions: `menu`, `start-cell`, `peers`, `join`, `deck`, `deck-label`.
 
-## The deck (0.4.0)
+## The deck
 
 `herdr plugin action invoke --plugin a4sx.mesh deck` opens the deck: the mesh, its cells, your library, the mesh's rules, this host and moving a cell (keys 1 to 5), with each selected row's operations one key away. It opens by itself when a herdr session starts; to change that, put one word into `on-start` in this plugin's config folder (`focus`, the default; `open`; or `off`) or set `DECK_ON_START`. It reads locally every 5 seconds and asks the server about once a minute (a manual refresh with `.` asks at once; when the server says "slow down", it waits longer each time). It needs herdr 0.9.5 or newer for its start hook. A backup uploads the conversation as the `upload` setting says: `scrubbed` (the default: secrets, personal data, host names and paths removed) or `keep-names` (names, hosts and paths kept on this computer, only secrets removed; the server still redacts them until a4sx #2292). A backup uploads at once, without a question. Set it with one word in the file `upload` in the same folder, or with `DECK_UPLOAD`. The deck shows the setting next to the operation and in the result. "As it is" isn't offered yet: until a4sx #2292 the server scrubs every upload.
 
@@ -53,7 +59,7 @@ herdr plugin action invoke a4sx.mesh.menu
 
 If you linked a clone, run `herdr plugin link` on the folder again after you update it. To remove a linked plugin: `herdr plugin unlink a4sx.mesh`.
 
-**In VS Code (0.5.0).** The a4sx extension's "Open deck" runs this same deck in a VS Code terminal. A cell start there opens a VS Code terminal: the deck writes one request into a private folder the extension made for it, and the extension checks it again and runs only `a4sx launch` with `--cell`, `--new-session` or `--a4sx-session`. Anything else the deck shows as a command to run by hand.
+**In VS Code (0.5.0).** The a4sx extension's "Open deck" (with the a4sx extension's next release, 0.9.7) runs this same deck in a VS Code terminal. A cell start there opens a VS Code terminal: the deck writes one request into a private folder the extension made for it, and the extension checks it again and runs only `a4sx launch` with `--cell`, `--new-session` or `--a4sx-session`. Anything else the deck shows as a command to run by hand.
 
 ## What the menu does
 
